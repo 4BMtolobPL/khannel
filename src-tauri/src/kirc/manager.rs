@@ -1,4 +1,4 @@
-use crate::kirc::core::server_actor;
+use crate::kirc::core::ServerActor;
 use crate::kirc::emits::{emit_server_added, emit_server_status};
 use crate::kirc::state::app::AppState;
 use crate::kirc::state::kirc::KircState;
@@ -44,17 +44,17 @@ impl KircManager {
     }
 
     fn run_server(&self, server_id: ServerId) -> anyhow::Result<()> {
-        if let Some(server) = self.kirc_state.get_server(server_id) {
-            let config = server.config();
+        let server = self
+            .kirc_state
+            .get_server(server_id)
+            .context("Server not found")?;
 
-            info!(server_id = %server_id, "Spawn server actor");
-            let handle = tokio::spawn(server_actor(server_id, config, self.app_handle.clone()));
+        info!(server_id = %server_id, "Spawn server actor");
+        let actor = ServerActor::new(server_id, server.clone(), self.app_handle.clone());
+        let handle = tokio::spawn(actor.run());
 
-            server.transition_to_connecting(handle);
-            Ok(())
-        } else {
-            Err(anyhow!("Server not found"))
-        }
+        server.transition_to_connecting(handle);
+        Ok(())
     }
 }
 
