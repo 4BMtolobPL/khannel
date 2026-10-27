@@ -110,7 +110,29 @@ gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = 
 참고: 계획서 상의 "Tauri 어댑터"는 불필요해졌다. 기존 Tauri 앱(src-tauri)은
 이제 코어의 **복사본**을 계속 소유하며(`src-tauri/src`) kirc-core를 참조하지 않기 때문이다.
 
-### Phase 2 — GPUI 코어 뼈대 + 경로/로깅/런처
+### Phase 2 — GPUI 코어 뼈대 + tokio 브리지 (완료, 2026-10-27)
+
+**결과: GPUI 앱이 Wayland에서 기동되어 런 루프에 안정 진입.** `cargo test --workspace` 25개 통과.
+
+구현 내역 (`crates/kirc-app`):
+- `main.rs`:
+  - `logging::init_logging()` — tauri 의존 없이 동일 유지
+  - app data dir: `directories::ProjectDirs` (Linux `~/.local/share/kirc-rs`), debug 빌드에 `/dev` suffix 유지
+  - 스냅샷 복원 → `KircManager` → `KircApi` 세트 구성
+  - `gpui_platform::application()`으로 오픈 윈도우 760x520
+- `api.rs` (tokio ↔ GPUI 브리지):
+  - 독립 tokio multi-thread 런타임 소유, ServerActor는 `rt.spawn`
+  - 모든 UI 명령은 `rt.enter()` 가드 후 kirc-core `KircApi` 호출
+  - **교훈**: GPUI executor 퓨처 안에서는 `tokio::time::sleep` 금지(리액터 없음)
+    → 대기는 `cx.background_executor().timer(...)` 사용
+  - `UiEvent` 채널 (tx→rx) 로 core 이벤트를 UI로 전달
+- `model.rs`: `IrcModel` Entity — `ircStore` 필드(servers/channels/messages/currents/nick_errors) 이식
+  + `ircService.ts`의 kirc:event switch(UserMessage/Join/Part/Quit/Nick/Topic/Error) 1:1 이식
+  + store operations/queries(ensure_channel, add_message, server_unread 등) 이식
+- `chat_app.rs`: `ChatApp` 루트 뷰 — 사이드바(서버 rows: 이름/unread 배지/status dot),
+  채널 리스트(현재 서버), 메시지 목록(User/System), 입력창(키 네이밍 기반 간이 composer), Send 버튼.
+  `cx.observe(model)` 로 렌더 갱신.
+- 한글/IME 입력은 Phase 3에서 정식 input 컴포넌트로 교체.
 ```rust
 // crates/kirc-app/main.rs
 fn main() {

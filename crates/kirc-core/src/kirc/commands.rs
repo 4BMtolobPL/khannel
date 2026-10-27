@@ -1,12 +1,13 @@
 use crate::error::MyCustomError;
-use crate::kirc::commands::payload::{
-    ChangeNickPayload, ChannelInfo, ChannelPayload, ConnectServerPayload, ServerInfo,
-};
 use crate::kirc::event::{emit_channel_lock_changed, EventSender};
 use crate::kirc::manager::KircManager;
 use crate::kirc::types::{ServerCommand, ServerId};
 use anyhow::Context;
 use std::sync::Arc;
+
+pub use crate::kirc::commands::payload::{
+    ChangeNickPayload, ChannelInfo, ChannelPayload, ConnectServerPayload, ServerInfo,
+};
 use tracing::{info, instrument};
 
 /// UI 프레임워크를 통한 명령 진입점 관련 facade.
@@ -180,7 +181,7 @@ impl KircApi {
     }
 }
 
-mod payload {
+pub mod payload {
     use crate::kirc::types::server::ServerConfig;
     use crate::kirc::types::{ChannelId, ServerId, ServerStatus};
     use serde::{Deserialize, Serialize};
@@ -195,6 +196,22 @@ mod payload {
     }
 
     impl ConnectServerPayload {
+        pub fn new(
+            server_id: Option<ServerId>,
+            host: String,
+            port: u16,
+            tls: bool,
+            nickname: String,
+        ) -> Self {
+            Self {
+                server_id,
+                host,
+                port,
+                tls,
+                nickname,
+            }
+        }
+
         pub fn server_id(&self) -> Option<ServerId> {
             self.server_id
         }
@@ -217,6 +234,10 @@ mod payload {
     }
 
     impl ChannelPayload {
+        pub fn new(server_id: ServerId, channel: ChannelId) -> Self {
+            Self { server_id, channel }
+        }
+
         pub fn server_id(&self) -> ServerId {
             self.server_id
         }
@@ -245,19 +266,29 @@ mod payload {
     #[derive(Clone, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub struct ServerInfo {
-        id: ServerId,
-        name: String,
-        host: String,
-        port: u16,
-        tls: bool,
-        nickname: String,
-        status: ServerStatus,
-        channels: Vec<ChannelInfo>,
+        pub id: ServerId,
+        pub name: String,
+        pub host: String,
+        pub port: u16,
+        pub tls: bool,
+        pub nickname: String,
+        pub status: ServerStatus,
+        pub channels: Vec<ChannelInfo>,
     }
 
     impl ServerInfo {
         pub fn builder() -> ServerInfoBuilder {
             ServerInfoBuilder::new()
+        }
+    }
+
+    impl ChannelInfo {
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        pub fn locked(&self) -> bool {
+            self.locked
         }
     }
 
@@ -349,5 +380,11 @@ mod payload {
     pub struct ChangeNickPayload {
         pub server_id: ServerId,
         pub new_nick: String,
+    }
+
+    impl ChangeNickPayload {
+        pub fn new(server_id: ServerId, new_nick: String) -> Self {
+            Self { server_id, new_nick }
+        }
     }
 }
