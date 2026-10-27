@@ -138,7 +138,11 @@ impl KircManager {
             .get_server(server_id)
             .context("Can't find server")?;
         server.send_command(ServerCommand::Join(channel_name.to_string()))?;
-        server.insert_channel(channel_name, false);
+        // 기존 채널 항목이 있으면 그대로 둔다 — 재조인으로 lock 상태가
+        // `locked: false` 덮어쓰기되면 안 된다 (Phase 4 정규화 이후 스냅샷 영속 대상).
+        if !server.contains_channel(channel_name) {
+            server.insert_channel(channel_name, false);
+        }
 
         Ok(())
     }

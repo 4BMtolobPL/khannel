@@ -162,6 +162,11 @@ impl ServerState {
             .unwrap_or(false)
     }
 
+    /// 채널 항목 존재 여부 (재조인 시 lock을 덮어쓰지 않기 위한 용도)
+    pub fn contains_channel(&self, channel_name: &str) -> bool {
+        self.channels.lock().unwrap().contains_key(channel_name)
+    }
+
     pub fn set_channel_locked(&self, channel: &str, locked: bool) {
         if let Some(channel) = self.channels.lock().unwrap().get_mut(channel) {
             channel.locked = locked;
@@ -275,5 +280,16 @@ mod tests {
         assert!(!server.is_channel_locked("#missing"));
         server.set_channel_locked("#missing", true);
         assert!(!server.is_channel_locked("#missing"));
+    }
+
+    #[test]
+    fn contains_channel_for_rejoin_preserves_lock() {
+        let server = test_server();
+        server.insert_channel("#test", true);
+
+        assert!(server.contains_channel("#test"));
+        // 기존 항목이 있으면 join_channel은 insert하지 않는다 → lock 유지가 전제가 된다.
+        assert!(server.is_channel_locked("#test"));
+        assert!(!server.contains_channel("#missing"));
     }
 }

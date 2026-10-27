@@ -132,6 +132,11 @@ impl IrcModel {
                         nickname: info.nickname.clone(),
                         status: info.status.clone(),
                     });
+                    // 채널/lock은 코어 스냅샷에서 기동 시 동기화한다.
+                    // (이벤트만으론 복원 채널이 갱신되지 않아 lock이 사라져 보였다)
+                    for channel in &info.channels {
+                        m.sync_channel_from_core(info.id, channel.name(), channel.locked());
+                    }
                 }
                 cx.notify();
             });
@@ -448,6 +453,42 @@ impl IrcModel {
         }
 
         self.messages.entry(channel_id).or_default();
+    }
+
+    /// 기동 시 코어 스냅샷의 채널(과 lock 상태)을 UI로 동기화한다.
+    /// 기존 항목이 있으면 lock만 갱신하고, 없으면 lock을 반영해 생성한다.
+    pub fn sync_channel_from_core(
+        &mut self,
+        server_id: ServerId,
+        channel_name: &str,
+        locked: bool,
+    ) {
+        if !self.servers.contains_key(&server_id) {
+            return;
+        }
+        let channel_id = self.get_channel_id(&server_id, channel_name);
+        match self.channels.get_mut(&channel_id) {
+            Some(channel) => {
+                if channel.locked != locked {
+                    channel.locked = locked;
+                }
+            }
+            None => {
+                self.channels.insert(
+                    channel_id.clone(),
+                    Channel {
+                        server_id,
+                        name: channel_name.to_string(),
+                        users: BTreeSet::new(),
+                        unread: 0,
+                        locked,
+                        last_read_message_id: None,
+                        topic: None,
+                    },
+                );
+                self.messages.entry(channel_id).or_default();
+            }
+        }
     }
 
     pub fn add_message(&mut self, server_id: ServerId, channel_id: String, message: ChatMessage) {
