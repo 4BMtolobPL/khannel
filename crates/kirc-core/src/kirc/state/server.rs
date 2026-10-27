@@ -109,6 +109,14 @@ impl ServerState {
         self.runtime.lock().unwrap().status()
     }
 
+    /// 서버가 Failed 상태에 빠진 마지막 사유 (UI의 재연결 실패 표시 용도).
+    pub fn last_error(&self) -> Option<String> {
+        match &*self.runtime.lock().unwrap() {
+            ServerRuntime::Failed { error } => Some(error.clone()),
+            _ => None,
+        }
+    }
+
     pub fn config(&self) -> ServerConfig {
         self.config.lock().unwrap().clone()
     }

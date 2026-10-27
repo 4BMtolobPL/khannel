@@ -99,6 +99,8 @@ pub struct IrcModel {
     current_server_id: Option<ServerId>,
     current_channel_id: Option<String>,
     nick_errors: HashMap<ServerId, String>,
+    // 닉네임 변경 성공 캐시 — 닉변 모달(Phase 3)의 성공 표시 용도.
+    #[allow(dead_code)]
     nick_success: HashMap<ServerId, String>,
     api: Arc<UiApi>,
 }
@@ -116,13 +118,11 @@ impl IrcModel {
             api: api.clone(),
         };
 
-        // 스냅샷 서버 동기화 (initialize는 비동기이므로 spawn)
+        // 스냅샷 서버 동기화 (spawn: 비동기 컨텍스트에서 접근하기 위함)
         cx.spawn(async move |this, cx| {
             api.init();
-            // connecting 상태가 반영될 때까지 잠깐 대기 (GPUI 타이머 — 토큰 리액터 불필요)
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(300))
-                .await;
+            // 서버 목록은 스냅샷 복원 시점에 이미 kirc_state가 갖고 있으므로 즉시 동기화.
+            // 상태 전이는 ServerStatus 이벤트가 이벤트 루프를 통해 실시간 반영한다.
             let servers = api.get_servers();
             let _ = this.update(cx, |m, cx| {
                 for info in servers {
@@ -193,9 +193,7 @@ impl IrcModel {
     }
 
     fn on_channel_lock_changed(&mut self, p: ChannelLockChangedEvent) {
-        if let Some(channel) = self.channels.get_mut(&p.channel) {
-            channel.locked = p.locked;
-        }
+        self.update_channel_lock(&p.channel, p.locked);
     }
 
     fn on_system_message(&mut self, p: SystemMessagePayload) {
@@ -494,6 +492,8 @@ impl IrcModel {
         }
     }
 
+    // Phase 3 예약: MessageView 자동 스크롤 / UnreadDivider 로직에서 사용.
+    #[allow(dead_code)]
     pub fn update_channel_last_read_message_id(
         &mut self,
         channel_id: &str,
@@ -542,6 +542,8 @@ impl IrcModel {
         self.current_channel_id.as_deref()
     }
 
+    // Phase 3 예약: 모달/입력창 헤더(서버 표시명)에서 사용.
+    #[allow(dead_code)]
     pub fn current_server(&self) -> Option<&Server> {
         self.current_server_id.as_ref().and_then(|id| self.servers.get(id))
     }
@@ -570,6 +572,8 @@ impl IrcModel {
         result
     }
 
+    // Phase 3 예약: ChangeNicknameModal 초기값에서 사용.
+    #[allow(dead_code)]
     pub fn current_server_nickname(&self) -> Option<&str> {
         self.current_server().map(|s| s.nickname.as_str())
     }
@@ -606,6 +610,8 @@ impl IrcModel {
         cx.notify();
     }
 
+    // Phase 3 예약: 채널 컨텍스트 메뉴(leave)에서 사용.
+    #[allow(dead_code)]
     pub fn leave_channel(&mut self, channel_id: &str, cx: &mut Context<Self>) {
         let Some(channel) = self.channels.get(channel_id) else { return };
         let payload = kirc_core::kirc::commands::ChannelPayload::new(
@@ -619,6 +625,8 @@ impl IrcModel {
         cx.notify();
     }
 
+    // Phase 3 예약: 서버 컨텍스트 메뉴(disconnect)에서 사용.
+    #[allow(dead_code)]
     pub fn disconnect_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         if let Err(e) = self.api.disconnect_server(server_id) {
             tracing::warn!("disconnect_server failed: {}", e);
@@ -626,6 +634,8 @@ impl IrcModel {
         cx.notify();
     }
 
+    // Phase 3 예약: 서버 컨텍스트 메뉴(reconnect)에서 사용.
+    #[allow(dead_code)]
     pub fn connect_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         // 기존 서버 재연결 (스냅샷 서버)
         let Some(server) = self.servers.get(&server_id).cloned() else { return };
@@ -643,6 +653,8 @@ impl IrcModel {
         cx.notify();
     }
 
+    // Phase 3 예약: ChangeNicknameModal 제출에서 사용.
+    #[allow(dead_code)]
     pub fn change_nickname(
         &mut self,
         server_id: ServerId,

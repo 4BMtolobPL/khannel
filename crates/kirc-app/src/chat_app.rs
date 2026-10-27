@@ -30,25 +30,22 @@ struct Palette {
 // 라이트 모드 팔레트 (다크 모드는 Phase 3+)
 fn light() -> Palette {
     Palette {
-    bg_main: rgb(0xf5f5f5),
-    bg_side: rgb(0xfafafa),
-    border: rgb(0xd4d4d4),
-    text_main: rgb(0x171717),
-    text_subtle: rgb(0xa3a3a3),
-    hover: rgb(0xe5e5e5),
-    accent: rgb(0x0284c7),
+        bg_main: rgb(0xf5f5f5),
+        bg_side: rgb(0xfafafa),
+        border: rgb(0xd4d4d4),
+        text_main: rgb(0x171717),
+        text_subtle: rgb(0xa3a3a3),
+        hover: rgb(0xe5e5e5),
+        accent: rgb(0x0284c7),
     }
 }
-
-fn LIGHT() -> Palette { light() }
 
 // ==================================== ChatApp ====================================
 
 pub struct ChatApp {
-    model: gpui::WeakEntity<IrcModel>,
+    model: gpui::Entity<IrcModel>,
     focus: FocusHandle,
     text_buffer: String,
-    root_model: gpui::Entity<IrcModel>,
 }
 
 impl ChatApp {
@@ -57,8 +54,7 @@ impl ChatApp {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
 
         ChatApp {
-            root_model: model.clone(),
-            model: model.downgrade(),
+            model,
             focus: cx.focus_handle(),
             text_buffer: String::new(),
         }
@@ -97,7 +93,7 @@ impl Render for ChatApp {
             window.focus(&self.focus, cx);
         }
 
-        let model = self.root_model.read(cx);
+        let model = self.model.read(cx);
         let is_locked = model.is_locked();
         let servers = model.servers().clone();
         let unread = model.server_unread();
@@ -116,28 +112,26 @@ impl Render for ChatApp {
                 .size_full()
                 .justify_center()
                 .items_center()
-                .bg(LIGHT().bg_main)
-                .text_color(LIGHT().text_main)
+                .bg(light().bg_main)
+                .text_color(light().text_main)
                 .child("Select or add a server");
         };
-
-        let server_id_for_class = server.id;
 
         div()
             .w_full()
             .h_full()
             .flex()
-            .bg(LIGHT().bg_main)
-            .text_color(LIGHT().text_main)
+            .bg(light().bg_main)
+            .text_color(light().text_main)
             // ── 좌측 사이드바 ──
             .child(
                 div()
                     .w(px(160.))
                     
                     .flex_col()
-                    .bg(LIGHT().bg_side)
+                    .bg(light().bg_side)
                     .border_r_1()
-                    .border_color(LIGHT().border)
+                    .border_color(light().border)
                     .child(
                         div()
                             .px(px(8.))
@@ -155,8 +149,8 @@ impl Render for ChatApp {
                                 let mut row = div().id(item.id.to_string()).w_full().flex()
                                     .items_center().justify_between().px(px(8.)).py(px(4.))
                                     .cursor_pointer()
-                                    .when(is_selected, |d| d.bg(LIGHT().hover))
-                                    .hover(|h| h.bg(LIGHT().hover))
+                                    .when(is_selected, |d| d.bg(light().hover))
+                                    .hover(|h| h.bg(light().hover))
                                     .on_click({
                                         let id = item.id;
                                         let model = self.model.clone();
@@ -198,24 +192,27 @@ impl Render for ChatApp {
                         div().flex_col().gap(px(2.)).ml(px(12.)).children(
                             channels
                                 .values()
-                                .filter(|c| c.server_id == server_id_for_class)
+                                .filter(|c| current_server_id == Some(c.server_id))
                                 .map(|item| {
+                                    // ircStore와 동일하게 current_channel_id는
+                                    // 복합 ID("serverId:channel")를 유지한다.
+                                    let channel_id =
+                                        model.get_channel_id(&item.server_id, &item.name);
                                     let is_selected =
-                                        current_channel_id.as_ref() == Some(&item.name);
+                                        current_channel_id.as_ref() == Some(&channel_id);
                                     let mut row = div()
-                                        .id(item.name.clone())
+                                        .id(channel_id.clone())
                                         .w_full()
                                         .px(px(6.))
                                         .py(px(3.))
                                         .cursor_pointer()
-                                        .when(is_selected, |d| d.bg(LIGHT().hover))
-                                        .hover(|h| h.bg(LIGHT().hover))
+                                        .when(is_selected, |d| d.bg(light().hover))
+                                        .hover(|h| h.bg(light().hover))
                                         .on_click({
-                                            let name = item.name.clone();
                                             let model = self.model.clone();
                                             move |_, _, cx| {
                                                 let _ = model.update(cx, |m, cx| {
-                                                    m.set_current_channel(Some(name.clone()), cx);
+                                                    m.set_current_channel(Some(channel_id.clone()), cx);
                                                 });
                                             }
                                         })
@@ -246,29 +243,29 @@ impl Render for ChatApp {
                                     .gap(px(8.))
                                     .child(
                                         div().font_weight(FontWeight::BOLD)
-                                            .text_color(LIGHT().accent)
+                                            .text_color(light().accent)
                                             .child(message.nickname.clone().unwrap_or_default()),
                                     )
                                     .child(message.content.clone()),
                                 MessageType::System => div()
                                     .text_sm()
-                                    .text_color(LIGHT().text_subtle)
+                                    .text_color(light().text_subtle)
                                     .child(message.content.clone()),
                             })),
                     )
                     // 입력 영역
                     .child(
-                        div().flex().gap(px(8.)).p(px(10.)).border_t_1().border_color(LIGHT().border)
+                        div().flex().gap(px(8.)).p(px(10.)).border_t_1().border_color(light().border)
                             .child(button("lock", if is_locked { "🔒" } else { "🔓" }).on_click(
                                 cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_lock(cx)),
                             ))
                             .child(
                                 div().flex_1().rounded(px(4.)).px(px(8.)).py(px(6.)).text_sm()
-                                    .bg(rgb(0xffffff)).border_1().border_color(LIGHT().border)
+                                    .bg(rgb(0xffffff)).border_1().border_color(light().border)
                                     .when(is_locked, |d| d.opacity(0.5))
                                     .when(!self.text_buffer.is_empty(), |text| text.child(self.text_buffer.clone()))
                                     .when(self.text_buffer.is_empty(), |text| {
-                                        text.text_color(LIGHT().text_subtle)
+                                        text.text_color(light().text_subtle)
                                             .child("Type a message")
                                     })
                                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
@@ -316,7 +313,7 @@ fn button(id: &'static str, label: &str) -> gpui::Stateful<gpui::Div> {
         .px(px(8.))
         .py(px(4.))
         .text_sm()
-        .hover(|h| h.bg(LIGHT().hover))
+        .hover(|h| h.bg(light().hover))
         .child(label.to_string())
 }
 

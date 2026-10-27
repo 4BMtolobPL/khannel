@@ -117,18 +117,25 @@ gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = 
 구현 내역 (`crates/kirc-app`):
 - `main.rs`:
   - `logging::init_logging()` — tauri 의존 없이 동일 유지
-  - app data dir: `directories::ProjectDirs` (Linux `~/.local/share/kirc-rs`), debug 빌드에 `/dev` suffix 유지
+  - app data dir: `directories::BaseDirs` data dir + Tauri identifier(`com.kimtalmo.kirc-rs`) —
+    구 Tauri 앱이 쓰던 config.json을 그대로 공유 (Phase 4 패리티 #3 목적), debug 빌드에 `/dev` suffix 유지
   - 스냅샷 복원 → `KircManager` → `KircApi` 세트 구성
+  - 종료 흐름: `Quit` 액션(Ctrl+Q / Cmd+Q)과 마지막 창 닫기 모두
+    `UiApi::shutdown_blocking(600ms 캡)` → `cx.quit()` — `action.rs` 참고
   - `gpui_platform::application()`으로 오픈 윈도우 760x520
 - `api.rs` (tokio ↔ GPUI 브리지):
   - 독립 tokio multi-thread 런타임 소유, ServerActor는 `rt.spawn`
   - 모든 UI 명령은 `rt.enter()` 가드 후 kirc-core `KircApi` 호출
+  - 안전 종료: `shutdown_blocking(max_wait)` — 스냅샷 저장은 drain 이전에 동기 완료되므로
+    캡 초과 시 QUIT 완료 대기만 잘리고 상태 유실은 없음. 재진입(Quit 액션 후 cx.quit → on_app_quit)은 skip.
   - **교훈**: GPUI executor 퓨처 안에서는 `tokio::time::sleep` 금지(리액터 없음)
     → 대기는 `cx.background_executor().timer(...)` 사용
   - `UiEvent` 채널 (tx→rx) 로 core 이벤트를 UI로 전달
 - `model.rs`: `IrcModel` Entity — `ircStore` 필드(servers/channels/messages/currents/nick_errors) 이식
   + `ircService.ts`의 kirc:event switch(UserMessage/Join/Part/Quit/Nick/Topic/Error) 1:1 이식
   + store operations/queries(ensure_channel, add_message, server_unread 등) 이식
+  + `currentChannelId`도 원본과 동일하게 **복합 ID**(`serverId:channel`)을 유지해야 함 —
+    사이드바 채널 클릭 시 반드시 `get_channel_id`로 조합해 저장 (옛 Svelte 구현과의 차이 포인트)
 - `chat_app.rs`: `ChatApp` 루트 뷰 — 사이드바(서버 rows: 이름/unread 배지/status dot),
   채널 리스트(현재 서버), 메시지 목록(User/System), 입력창(키 네이밍 기반 간이 composer), Send 버튼.
   `cx.observe(model)` 로 렌더 갱신.
