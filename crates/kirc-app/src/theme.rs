@@ -1,4 +1,12 @@
-//! UI 색상 팔레트 — Svelte의 Tailwind 유틸리티 클래스를 GPUI 스타일로 매핑.
+//! UI 색상 팔레트 — **One Light (라이트) / One Dark (다크)**.
+//!
+//! 기존 Tailwind neutral/sky 매핑을 Atom Color Scheme 기본 팔레트로 교체했다:
+//! - 라이트: One Light (`#fafafa`, text `#282c34`, accent blue `#4078f2` ...)
+//! - 다크:   One Dark  (`#282c34`, text `#abb2bf`, accent blue `#61afef` ...)
+//!
+//! 반투명 색상 규칙: 배경/서페이스는 기본 **CC**(80%), 겹치는 인터랙션 표면
+//! (hover/선택/hover 배경/스크림)는 **80**(50%). border·텍스트·작은 요소
+//! (badge·상태 점·focus ring)는 투명도 없이 불투명.
 //!
 //! Svelte 앱은 Tailwind `dark:` 변형(prefers-color-scheme)으로 다크 모드를 지원하므로,
 //! GPUI에서는 [`Theme::current`]가 `cx.window_appearance()`로 동일한 기준으로 선택한다.
@@ -9,49 +17,49 @@ use gpui::{rgb, rgba, App, Rgba, WindowAppearance};
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     // ── 배경 ──
-    /// 메인 영역 (light: neutral-100 / dark: neutral-900)
+    /// 메인 영역
     pub bg_main: Rgba,
-    /// 사이드바 (light: neutral-50 / dark: neutral-900)
+    /// 사이드바
     pub bg_side: Rgba,
-    /// 텍스트 입력 상자 (light: white / dark: neutral-800)
+    /// 텍스트 입력 상자
     pub bg_input: Rgba,
-    /// 모달 패널 (light: white / dark: neutral-900)
+    /// 모달 패널
     pub panel: Rgba,
     // ── 보더 ──
-    /// 주요 경계선 (light: neutral-300 / dark: neutral-700)
+    /// 주요 경계선
     pub border: Rgba,
-    /// 옅은 구분선 (메뉴 separator 등, light: neutral-100 / dark: neutral-700)
+    /// 옅은 구분선 (메뉴 separator 등)
     pub border_subtle: Rgba,
     // ── 텍스트 ──
     pub text_main: Rgba,
     pub text_subtle: Rgba,
-    /// 시스템 메시지/라벨 (Svelte: text-gray-500, 양쪽 모드 동일)
+    /// 시스템 메시지/라벨 (양쪽 모드 동일)
     pub text_system: Rgba,
     // ── 인터랙션 ──
     pub hover: Rgba,
-    /// 서버 row 선택 (light: neutral-200 / dark: neutral-700)
+    /// 서버 row 선택
     pub selected: Rgba,
-    /// 채널 row 선택 (서버보다 한 단계 진하게, Svelte: neutral-300 / neutral-600)
+    /// 채널 row 선택
     pub selected_channel: Rgba,
-    // ── 액센트 (sky) ──
+    // ── 액센트 ──
     pub accent: Rgba,
     pub accent_hover: Rgba,
-    /// 닉네임 강조 텍스트 (light: sky-600 / dark: sky-400)
+    /// 닉네임 강조 텍스트
     pub accent_text: Rgba,
-    /// 컨텍스트 메뉴 accent hover 배경 (sky-50 / sky-900 alpha 30%)
+    /// 컨텍스트 메뉴 accent hover 배경
     pub accent_hover_bg: Rgba,
-    /// 입력 포커스 링 (sky-500)
+    /// 입력 포커스 링
     pub focus_ring: Rgba,
     // ── 배지/에러 ──
     pub badge_bg: Rgba,
     pub badge_text: Rgba,
     /// 액센트/위험 배경 위의 텍스트 (흰색)
     pub text_inverse: Rgba,
-    /// 에러 텍스트 (Svelte: text-red-500, 양쪽 모드 동일)
+    /// 에러 텍스트 (양쪽 모드 동일)
     pub error_text: Rgba,
-    /// 컨텍스트 메뉴 danger hover 배경 (red-50 / red-900 alpha 30%)
+    /// 컨텍스트 메뉴 danger hover 배경
     pub danger_hover_bg: Rgba,
-    /// 컨텍스트 메뉴 danger hover 텍스트 (red-600 / red-400)
+    /// 컨텍스트 메뉴 danger hover 텍스트
     pub danger_text: Rgba,
     // ── 상태 점 ──
     pub status_connected: Rgba,
@@ -60,9 +68,9 @@ pub struct Theme {
     // ── 오버레이 ──
     /// 모달 배경 스크림 (black/30)
     pub overlay_scrim: Rgba,
-    /// 컨텍스트 메뉴 배경 (light: white/95 / dark: neutral-800/95)
+    /// 컨텍스트 메뉴 배경
     pub menu_bg: Rgba,
-    /// 컨텍스트 메뉴 일반 hover 배경 (light: neutral-100 / dark: neutral-700)
+    /// 컨텍스트 메뉴 일반 hover 배경
     pub menu_hover: Rgba,
 }
 
@@ -75,108 +83,113 @@ impl Theme {
         }
     }
 
+    // ── One Light ──
     pub fn light() -> Theme {
-        let neutral_50 = rgb(0xfafafa);
-        let neutral_100 = rgb(0xf5f5f5);
-        let neutral_200 = rgb(0xe5e5e5);
-        let neutral_300 = rgb(0xd4d4d4);
-        let neutral_500 = rgb(0x737373);
-        let neutral_900 = rgb(0x171717);
-        let gray_500 = rgb(0x6b7280);
-        let sky_50 = rgb(0xf0f9ff);
-        let sky_500 = rgb(0x0ea5e9);
-        let sky_600 = rgb(0x0284c7);
-        let red_50 = rgb(0xfef2f2);
-        let red_500 = rgb(0xef4444);
-        let red_600 = rgb(0xdc2626);
-        let green_500 = rgb(0x22c55e);
-        let yellow_500 = rgb(0xeab308);
-        let white = rgb(0xffffff);
+        // 반투명 규칙: 배경/서페이스는 CC(80%), 겹치는 인터랙션 표면은 80(50%).
+        // border·텍스트·작은 요소(badge/상태 점/focus ring)는 불투명.
+        let one_bg = rgba(0xfafafacc); // One Light window bg
+        let one_side = rgba(0xeeeeeecc); // 사이드바 (탭바 톤 기반)
+        let one_elevated = rgba(0xffffffcc); // 입력/패널
+        let one_border = rgb(0xd4d4d4);
+        let one_border_subtle = rgb(0xe8e8e8);
+        let one_text = rgb(0x282c34);
+        let one_text_subtle = rgb(0x9d9d9d); // gutter fg
+        let one_hover = rgba(0xe8e8e880);
+        let one_selected = rgba(0xe0e0e080);
+        let one_selected_channel = rgba(0xd4d4d480);
+        let one_red = rgb(0xe45649);
+        let one_green = rgb(0x50a14f);
+        let one_yellow = rgb(0xc18401);
+        let one_blue = rgb(0x4078f2);
+        let one_blue_hover = rgba(0x5c86e8cc);
 
         Theme {
-            bg_main: neutral_100,
-            bg_side: neutral_50,
-            bg_input: white,
-            panel: white,
-            border: neutral_300,
-            border_subtle: neutral_100,
-            text_main: neutral_900,
-            text_subtle: neutral_500,
-            text_system: gray_500,
-            hover: neutral_100,
-            selected: neutral_200,
-            selected_channel: neutral_300,
-            accent: sky_600,
-            accent_hover: sky_500,
-            accent_text: sky_600,
-            accent_hover_bg: sky_50,
-            focus_ring: sky_500,
-            badge_bg: red_500,
-            badge_text: white,
-            text_inverse: white,
-            error_text: red_500,
-            danger_hover_bg: red_50,
-            danger_text: red_600,
-            status_connected: green_500,
-            status_connecting: yellow_500,
-            status_disconnected: red_500,
-            overlay_scrim: rgba(0x0000004d), // black/30
-            menu_bg: rgba(0xfffffff2),       // white/95
-            menu_hover: neutral_100,
+            bg_main: one_bg,
+            bg_side: one_side,
+            bg_input: one_elevated,
+            panel: one_elevated,
+            border: one_border,
+            border_subtle: one_border_subtle,
+            text_main: one_text,
+            text_subtle: one_text_subtle,
+            text_system: one_text_subtle,
+            hover: one_hover,
+            selected: one_selected,
+            selected_channel: one_selected_channel,
+            accent: one_blue,
+            accent_hover: one_blue_hover,
+            accent_text: one_blue,
+            accent_hover_bg: rgba(0x4078f280), // blue alpha 80
+            focus_ring: one_blue,
+            badge_bg: one_red,
+            badge_text: rgb(0xffffff),
+            text_inverse: rgb(0xffffff),
+            error_text: one_red,
+            danger_hover_bg: rgba(0xe4564980), // red alpha 80
+            danger_text: one_red,
+            status_connected: one_green,
+            status_connecting: one_yellow,
+            status_disconnected: one_red,
+            overlay_scrim: rgba(0x00000080), // black alpha 80
+            menu_bg: rgba(0xffffffcc),       // white CC
+            menu_hover: one_hover,
         }
     }
 
+    // ── One Dark ──
     pub fn dark() -> Theme {
-        let neutral_100 = rgb(0xf5f5f5);
-        let neutral_400 = rgb(0xa3a3a3);
-        let neutral_600 = rgb(0x525252);
-        let neutral_700 = rgb(0x404040);
-        let neutral_800 = rgb(0x262626);
-        let neutral_900 = rgb(0x171717);
-        let gray_500 = rgb(0x6b7280);
-        let sky_400 = rgb(0x38bdf8);
-        let sky_500 = rgb(0x0ea5e9);
-        let sky_600 = rgb(0x0284c7);
-        let red_400 = rgb(0xf87171);
-        let red_500 = rgb(0xef4444);
-        let green_500 = rgb(0x22c55e);
-        let yellow_500 = rgb(0xeab308);
+        let one_bg = rgba(0x282c34cc); // One Dark window bg
+        let one_side = rgba(0x21252bcc); // 탭바/딥 패널 톤
+        let one_bg_input = rgba(0x2c313acc);
+        let one_border = rgb(0x3e4451);
+        let one_border_subtle = rgb(0x3b4048);
+        let one_text = rgb(0xabb2bf);
+        let one_text_subtle = rgb(0x5c6370); // gutter fg
+        let one_text_system = rgb(0x7f848e);
+        let one_hover = rgba(0x3b404880);
+        let one_selected = rgba(0x3e445180);
+        let one_selected_channel = rgba(0x4b526380);
+        let one_red = rgb(0xe06c75);
+        let one_green = rgb(0x98c379);
+        let one_yellow = rgb(0xe5c07b);
+        let one_blue = rgb(0x61afef);
+        let one_blue_hover = rgba(0x82aff9cc);
 
         Theme {
-            bg_main: neutral_900,
-            bg_side: neutral_900,
-            bg_input: neutral_800,
-            panel: neutral_900,
-            border: neutral_700,
-            border_subtle: neutral_700,
-            text_main: neutral_100,
-            text_subtle: neutral_400,
-            text_system: gray_500,
-            hover: neutral_800,
-            selected: neutral_700,
-            selected_channel: neutral_600,
-            accent: sky_600,
-            accent_hover: sky_500,
-            accent_text: sky_400,
-            accent_hover_bg: rgba(0x0c4a6e4d), // sky-900/30
-            focus_ring: sky_500,
-            badge_bg: red_500,
+            bg_main: one_bg,
+            bg_side: one_side,
+            bg_input: one_bg_input,
+            panel: one_bg_input,
+            border: one_border,
+            border_subtle: one_border_subtle,
+            text_main: one_text,
+            text_subtle: one_text_subtle,
+            text_system: one_text_system,
+            hover: one_hover,
+            selected: one_selected,
+            selected_channel: one_selected_channel,
+            accent: one_blue,
+            accent_hover: one_blue_hover,
+            accent_text: one_blue,
+            accent_hover_bg: rgba(0x61afef80), // blue alpha 80
+            focus_ring: one_blue,
+            badge_bg: one_red,
             badge_text: rgb(0xffffff),
             text_inverse: rgb(0xffffff),
-            error_text: red_500,
-            danger_hover_bg: rgba(0x7f1d1f4d), // red-900/30
-            danger_text: red_400,
-            status_connected: green_500,
-            status_connecting: yellow_500,
-            status_disconnected: red_500,
-            overlay_scrim: rgba(0x0000004d), // black/30
-            menu_bg: rgba(0x262626f2),       // neutral-800/95
-            menu_hover: neutral_700,
+            error_text: one_red,
+            danger_hover_bg: rgba(0xe06c7580), // red alpha 80
+            danger_text: one_red,
+            status_connected: one_green,
+            status_connecting: one_yellow,
+            status_disconnected: one_red,
+            overlay_scrim: rgba(0x00000080), // black alpha 80
+            menu_bg: rgba(0x21252bcc),       // One Dark 딥 패널 CC
+            menu_hover: one_hover,
         }
     }
 }
 
-/// 상태 점 색상 (Svelte: connected → green-500, connecting/registering → yellow-500, else red-500)
+/// 상태 점 색상 (connected → green, connecting/registering → yellow, else red)
 pub fn status_dot_color(theme: &Theme, is_connected: bool, is_connecting: bool) -> Rgba {
     if is_connected {
         theme.status_connected
