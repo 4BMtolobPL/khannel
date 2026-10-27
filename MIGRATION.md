@@ -316,9 +316,11 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 **잔여 — 수동 체크리스트 (GUI 조작 필요, 위 1~7):**
    1~5번 시나리오(서버 연결/해제, 닉 중복, 채널 입퇴장, 메시지/에코, unread, lock,
    스냅샷 복원, 창 닫기/QUIT 종료)를 Tauri 버전과 나란히 대조해 수동 검증.
-   단 lock 토글 코어 반영 이슈(Phase 3 리뷰 #2)는 문서 결정에 따라 패리티 우선으로
-   그대로 두고 별도 이슈로 분리. Wayland 집중 점검 + macOS IME(한글 입력)는 macOS
-   장비에서 2차 검증.
+   단 lock 토글 코어 반영 이슈(Phase 3 리뷰 #2)는 패리티 우선으로 뒀다가 이후 정규화로
+   해결했다(3f379c0 — `toggle_lock`이 복합 ID가 아닌 채널명을 코어로 전달하고,
+   `ChannelLockChanged` 이벤트를 다시 복합 ID로 조합해 반영; lock은 이제 채널
+   스냅샷에 영속된다). Wayland 집중 점검 + macOS IME(한글 입력)는 macOS 장비에서
+   2차 검증.
 **macOS 1차 검증 결과 (2026-10-27, ccdbecb에서 수정):**
    - macOS에서 텍스트가 전혀 렌더되지 않음 → `gpui_platform`에 `font-kit` feature
      추가(gpui_macos 전용 feature, linux 빌드 영향 없음)로 해결.
