@@ -169,18 +169,56 @@ fn main() {
 - **액션 종료 흐름**: Quit(메뉴/단축키) → `manager.shutdown()` → `cx.quit()`.
   트레이는 유예 단계이므로 지금은 창의 닫기 버튼에도 안전 종료 흐름 임시 연결.
 
-### Phase 3 — 화면 포팅 (컴포넌트 단위)
+### Phase 3 — 화면 포팅 (컴포넌트 단위) (완료, 2026-10-27)
 
 `svelte → GPUI div` 1:1 매핑. 모달/입력 등은 `gpui-component` ecosystem 활용 검토.
 순서 권장: 입력창 + 서버리스트 → 메시지 뷰 → 모달 → 컨텍스트 메뉴.
 
+**결과: Svelte UI 6종(사이드바/메시지뷰/입력바 + 모달 3종)과 컨텍스트 메뉴 2종을 GPUI로 1:1 포팅.
+`cargo test --workspace` 25개 통과, Wayland 스모크 실행(기존 config.json 복원 + IRC 세션 기동) 확인.**
+
+계획 대비 결정 사항:
+- `gpui-component` ecosystem **미사용** — crates.io 배포판은 이 프로젝트의 zed git dep와
+  버전이 어긋나 공유할 수 없어, 모달/입력/메뉴 모두 자체 구현 (`overlay/`, `ui/input.rs`).
+- 입력창: gpui `examples/input.rs`의 정석 구현을 포팅한 `ui/input.rs` `TextInput` 엔티티
+  (`EntityInputHandler` + `window.handle_input` 등록 → 플랫폼 IME(X11 XIM / Wayland
+  text-input)가 엔티티로 텍스트를 주입). Enter 제출은 조합 중(`marked_range` 존재)이 아닐
+  때만 발화 — 한글 IME 안전. 표준 편집 액션(Backspace/Delete/방향키/SelectAll/Copy/Cut/
+  Paste/ShowCharacterPalette)은 `action.rs`에 정의하고 `ChatApp::show`에서 바인딩.
+- 메시지 뷰: GPUI `list` 가상화 + `FollowMode::Tail` (Svelte `isBottom` 자동 스크롤 대응).
+  채널 전환 시 `pause_following_tail()` + `scroll_to(ListOffset)`로 lastReadMessageId
+  위치 복원(Svelte `scrollIntoView({block:"start"})` 동일). 스크롤 핸들러는 ListState의
+  RefCell이 빌려진 상태에서 호출되므로 반드시 `cx.defer`로 빼서 모델을 갱신한다
+  (zed `thread_view.rs` 패턴).
+- 컨텍스트 메뉴: `deferred(anchored().position(pos).snap_to_window_with_margin(...))` +
+  `on_mouse_down_out` 닫기 — Svelte의 window click listener 대체. 채널 row 우클릭은
+  `cx.stop_propagation()`으로 서버 row로의 버블링을 막는다(원본 Svelte에서 두 메뉴가
+  동시에 뜨던 버그 수정).
+- 다크 모드: `Theme::current(cx)`가 `cx.window_appearance()`로 라이트/다크 팔레트 선택
+  (Tailwind `dark:` 변형 대응). `rgb()`/`rgba()`는 const가 아니므로 팔레트는 함수 로컬
+  바인딩으로 구성.
+- 모달 3종은 영속 엔티티로 `ChatApp`이 생성·보유하고 bool 플래그로 표시/숨긴다.
+  각 모달의 `DismissEvent` 구독이 플래그를 해제하며, composer 자동 포커스는 모달이
+  열려 있지 않을 때만 시도한다.
+- Svelte 개선 포인트: Connect/Copy 메뉴 항목은 원본에서 핸들러 없는 데코레이션이었으나
+  실제 액션(connect/copy-to-clipboard)에 연결. 메뉴 hover도 원본 Tailwind 클래스 3종
+  (Neutral/Accent/Danger)을 `MenuItemStyle`로 그대로 매핑.
+
+구현 파일 (`crates/kirc-app/src`):
+- `ui/` — `chat_app.rs`(루트 조율 + 컨텍스트 메뉴 state), `sidebar.rs`, `message_view.rs`,
+  `input_bar.rs`, `input.rs`(IME TextInput)
+- `overlay/` — `modal.rs`(공용 레이아웃/스크림), `server_modal.rs`, `channel_join_modal.rs`,
+  `change_nick_modal.rs`, `context_menu.rs`
+- `theme.rs`(팔레트), `action.rs`(편집 액션),
+  `model.rs`(add_server/join_channel/nick_error/nick_success 등 UI 액션 추가)
+
 | Svelte | GPUI |
 |---|---|
 | `+page.svelte` 사이드바 + Main | `ChatApp::render` — 서버/채널 리스트, 메시지 리스트, 입력폼 |
-| 컨텍스트 메뉴 ×2 | GPUI context menu (마우스 이벤트: 좌표, 노출/숨김 플래그는 기존 state 동일) |
-| `ServerModal`, `ChannelJoinModal`, `ChangeNicknameModal` | gpui-component Modal 또는 자체 오버레이 |
-| `MessageView` 자동 스크롤/UnreadDivider | scrollable + lastReadMessageId 로직 동일 이식 |
-| Tailwind class | GPUI 스타일 (dark mode: `ActiveTheme` 환경 or 자체 toggle) |
+| 컨텍스트 메뉴 ×2 | 자체 deferred+anchored 메뉴 (`overlay/context_menu.rs`; 좌표, 노출/숨김 플래그는 기존 state 동일) |
+| `ServerModal`, `ChannelJoinModal`, `ChangeNicknameModal` | 자체 오버레이 (`overlay/modal.rs` + 모달 3종) |
+| `MessageView` 자동 스크롤/UnreadDivider | `list` + `FollowMode::Tail` + lastReadMessageId 로직 동일 이식 |
+| Tailwind class | GPUI 스타일 (dark mode: `cx.window_appearance()` 기반 `Theme::current`) |
 | 상태: SvelteMap/`$state`/`$derived`/`$effect` | Entity 필드 + `cx.observe` + render 타임 계산 |
 
 이벤트 → 상태 반영 로직(`ircService.ts`의 switch 문)은 `IrcModel` 메서드로 이관:

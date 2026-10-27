@@ -4,8 +4,10 @@
 
 mod action;
 mod api;
-mod chat_app;
 mod model;
+mod overlay;
+mod theme;
+mod ui;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +21,7 @@ use kirc_core::memento::Memento;
 
 use crate::action::Quit;
 use crate::api::{UiApi, build_kirc, setup};
-use crate::chat_app::ChatApp;
+use crate::ui::chat_app::ChatApp;
 
 /// Graceful shutdown에 허용하는 최대 대기 시간.
 ///
@@ -94,7 +96,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            move |_window, cx| cx.new(|cx| ChatApp::show(api.clone(), rx, cx)),
+            move |window, cx| cx.new(|cx| ChatApp::show(api.clone(), rx, window, cx)),
         )
         .expect("open main window failed");
     });

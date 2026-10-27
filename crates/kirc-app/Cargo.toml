@@ -21,3 +21,4 @@ chrono = { workspace = true }
 uuid.workspace = true
 tracing = { workspace = true }
 directories = "6"
+unicode-segmentation = "1"
