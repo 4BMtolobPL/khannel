@@ -12,16 +12,18 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId,
-    InspectorElementId, InteractiveElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
-    Window, div, fill, prelude::*, px, rgba,
+    div, fill, prelude::*, px, rgba, App, Bounds, ClipboardItem, Context, CursorStyle, Element,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, InspectorElementId, InteractiveElement, KeyDownEvent, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
+    Point, Render, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
+    Window,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::action::{Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft, SelectRight};
+use crate::action::{
+    Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft, SelectRight,
+};
 use crate::theme::Theme;
 
 // ==================================== 이벤트 ====================================
@@ -101,7 +103,11 @@ impl TextInput {
     }
 
     /// 플레이스홀더 변경. 변경 시에만 notify한다.
-    pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
+    pub fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         let placeholder = placeholder.into();
         if self.placeholder != placeholder {
             self.placeholder = placeholder;
@@ -110,7 +116,12 @@ impl TextInput {
     }
 
     /// 내용을 통째로 교체하고 커서를 끝으로 이동한다.
-    pub fn set_text(&mut self, text: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_text(
+        &mut self,
+        text: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.content = text.into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
@@ -245,7 +256,12 @@ impl TextInput {
 
     // ---- 마우스 ----
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.enabled {
             return;
         }
@@ -263,7 +279,12 @@ impl TextInput {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.enabled {
             return;
         }
@@ -781,22 +802,15 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_key_down(cx.listener(
-                |this, event: &KeyDownEvent, _window, cx| {
-                    // Enter로 제출 — IME 조합(한글) 중에는 제출하지 않는다.
-                    if event.keystroke.key == "enter"
-                        && this.enabled
-                        && this.marked_range.is_none()
-                    {
-                        cx.emit(TextInputEvent::Submit(this.content.clone()));
-                        cx.stop_propagation();
-                    }
-                },
-            ))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                // Enter로 제출 — IME 조합(한글) 중에는 제출하지 않는다.
+                if event.keystroke.key == "enter" && this.enabled && this.marked_range.is_none() {
+                    cx.emit(TextInputEvent::Submit(this.content.clone()));
+                    cx.stop_propagation();
+                }
+            }))
             // 비활성화(Svelte `disabled`): 입력 요소를 흐리게 표시
             .when(!enabled, |d| d.opacity(0.5))
-            .child(TextInputElement {
-                input: cx.entity(),
-            })
+            .child(TextInputElement { input: cx.entity() })
     }
 }

@@ -1,4 +1,5 @@
 use crate::kirc::ctcp::{parse_ctcp, CtcpCommand};
+use crate::kirc::event::EventSender;
 use crate::kirc::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
 };
@@ -9,7 +10,6 @@ use irc::client::prelude::*;
 use irc::client::ClientStream;
 use irc::error;
 use std::sync::Arc;
-use crate::kirc::event::EventSender;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -21,11 +21,7 @@ pub struct ServerActor {
 }
 
 impl ServerActor {
-    pub fn new(
-        server_id: ServerId,
-        server: Arc<ServerState>,
-        ui_sink: EventSender,
-    ) -> Self {
+    pub fn new(server_id: ServerId, server: Arc<ServerState>, ui_sink: EventSender) -> Self {
         Self {
             server_id,
             server,
@@ -50,7 +46,7 @@ impl ServerActor {
         // 2. 커맨드 채널은 연결 성공 이후에 생성
         let (tx, rx) = unbounded_channel::<ServerCommand>();
         self.server.transition_to_registering(tx);
-        let _ = emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Registering);
+        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Registering);
 
         // 3. 메인 세션: IRC 스트림과 커맨드 채널을 select 로 소비
         trace!(server_id = %self.server_id, "Start server actor loop");
@@ -58,7 +54,7 @@ impl ServerActor {
 
         // 4. 세션 종료(정상 종료/연결 단절 공통). 추후 재연결 구현 시 Closed 분기가 재시도 진입점이 된다.
         self.server.transition_to_disconnected();
-        let _ = emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
+        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
 
         debug!(server_id = %self.server_id, reason = ?outcome, "Server actor session ended");
     }
@@ -110,7 +106,7 @@ impl ServerActor {
                             debug!(event = "irc_stream_error", error = "NoUsableNick", "IRC stream error, No usable nick");
 
                             // 닉네임 변경은 alt_nick 없이 실패시 emit 후 바로 continue
-                            let _ = emit_change_nick_failed(&self.ui_sink, self.server_id, "Can't change nickname");
+                            emit_change_nick_failed(&self.ui_sink, self.server_id, "Can't change nickname");
 
                             continue
                         }
@@ -301,7 +297,7 @@ impl ServerActor {
         error!(server_id = %self.server_id, message = %message, "Server actor failed");
 
         self.server.transition_to_failed(message);
-        let _ = emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Failed);
+        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Failed);
     }
 }
 

@@ -7,6 +7,9 @@ use gpui::actions;
 
 actions!(kirc, [Quit]);
 
+// 모달/컨텍스트 메뉴의 Esc 닫기 액션 (Phase 4 패리티 수정 — Svelte `<dialog>`의 Esc 대체)
+actions!(kirc, [Dismiss]);
+
 // TextInput 표준 편집 액션 (gpui examples/input.rs 포팅)
 actions!(
     kirc,

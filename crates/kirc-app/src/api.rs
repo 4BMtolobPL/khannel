@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use kirc_core::error::MyCustomError;
 use kirc_core::kirc::commands::{
-    ChannelPayload, ChangeNickPayload, ConnectServerPayload, KircApi, ServerInfo,
+    ChangeNickPayload, ChannelPayload, ConnectServerPayload, KircApi, ServerInfo,
 };
 use kirc_core::kirc::event::{EventSender, UiEvent};
 use kirc_core::kirc::manager::KircManager;
@@ -78,10 +78,7 @@ impl UiApi {
     /// 서버 목록 동기화
     pub fn get_servers(&self) -> Vec<ServerInfo> {
         let _guard = self.rt.enter();
-        match self.kirc_api.get_servers() {
-            Ok(infos) => infos,
-            Err(_) => Vec::new(),
-        }
+        self.kirc_api.get_servers().unwrap_or_default()
     }
 
     pub fn connect_server(&self, payload: ConnectServerPayload) -> Result<(), MyCustomError> {

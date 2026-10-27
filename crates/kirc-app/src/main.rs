@@ -12,7 +12,7 @@ mod ui;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{App, Bounds, KeyBinding, Size, WindowBounds, WindowOptions, prelude::*, px};
+use gpui::{prelude::*, px, App, Bounds, KeyBinding, Size, WindowBounds, WindowOptions};
 use gpui_platform::application;
 use kirc_core::fs;
 use kirc_core::kirc::persistence::KircStateSnapshot;
@@ -20,7 +20,7 @@ use kirc_core::logging;
 use kirc_core::memento::Memento;
 
 use crate::action::Quit;
-use crate::api::{UiApi, build_kirc, setup};
+use crate::api::{build_kirc, setup, UiApi};
 use crate::ui::chat_app::ChatApp;
 
 /// Graceful shutdown에 허용하는 최대 대기 시간.
@@ -56,8 +56,7 @@ fn main() {
     let dir = app_data_dir();
     std::fs::create_dir_all(&dir).expect("app data dir create failed");
     let config_path = dir.join("config.json");
-    let snapshot: KircStateSnapshot =
-        fs::load(&config_path).expect("snapshot load failed");
+    let snapshot: KircStateSnapshot = fs::load(&config_path).expect("snapshot load failed");
 
     let mut state = snapshot.restore();
     state.set_persistence_path(&config_path);

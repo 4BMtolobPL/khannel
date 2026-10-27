@@ -8,8 +8,8 @@
 //! - 맨 아래 스크롤 중에는 `lastReadMessageId`를 마지막 메시지로 갱신 (onScroll 로직)
 
 use gpui::{
-    Context, Entity, FontWeight, IntoElement, ListAlignment, ListState, ParentElement, Render,
-    Styled, Window, div, list, prelude::*, px,
+    div, list, prelude::*, px, Context, Entity, FontWeight, IntoElement, ListAlignment, ListState,
+    ParentElement, Render, Styled, Window,
 };
 
 use crate::model::{IrcModel, MessageType};
@@ -46,9 +46,9 @@ impl MessageView {
                     let Some(channel_id) = m.current_channel_id().map(str::to_string) else {
                         return;
                     };
-                    let last_id = m.current_messages().and_then(|msgs| {
-                        msgs.last().map(|message| message.id.clone())
-                    });
+                    let last_id = m
+                        .current_messages()
+                        .and_then(|msgs| msgs.last().map(|message| message.id.clone()));
                     if let Some(last_id) = last_id {
                         m.update_channel_last_read_message_id(&channel_id, Some(last_id), cx);
                     }
@@ -96,9 +96,7 @@ impl MessageView {
             let last_read_index = self.model.read(cx).current_channel().and_then(|channel| {
                 let messages = self.model.read(cx).current_messages()?;
                 let last_read = channel.last_read_message_id.clone()?;
-                messages
-                    .iter()
-                    .position(|message| message.id == last_read)
+                messages.iter().position(|message| message.id == last_read)
             });
 
             self.list_state.reset(count);
@@ -163,7 +161,13 @@ impl MessageView {
                             .text_color(theme.accent_text)
                             .child(label),
                     )
-                    .child(div().ml_1().flex_1().min_w_0().child(message.content.clone()))
+                    .child(
+                        div()
+                            .ml_1()
+                            .flex_1()
+                            .min_w_0()
+                            .child(message.content.clone()),
+                    )
             }
             MessageType::System => div()
                 .mb_1()
@@ -191,14 +195,12 @@ impl MessageView {
             .child(row)
             .when(show_divider, |d| {
                 d.child(
-                    div()
-                        .mb_1()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text_system)
-                                .child("--------Last read--------"),
-                        ),
+                    div().mb_1().child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text_system)
+                            .child("--------Last read--------"),
+                    ),
                 )
             })
             .into_any()
@@ -218,29 +220,21 @@ impl Render for MessageView {
         let own_nickname = model.current_server().map(|server| server.nickname.clone());
 
         // Svelte p-3: 메시지 영역 패딩
-        div()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .p(px(12.))
-            .child(
-                list(
-                    self.list_state.clone(),
-                    move |index, _window, _cx| {
-                        let Some(message) = messages.get(index) else {
-                            return div().into_any();
-                        };
-                        let is_last = index + 1 >= messages.len();
-                        Self::render_item(
-                            message,
-                            is_last,
-                            &last_read_message_id,
-                            &own_nickname,
-                            theme,
-                        )
-                    },
+        div().flex_1().min_h_0().overflow_hidden().p(px(12.)).child(
+            list(self.list_state.clone(), move |index, _window, _cx| {
+                let Some(message) = messages.get(index) else {
+                    return div().into_any();
+                };
+                let is_last = index + 1 >= messages.len();
+                Self::render_item(
+                    message,
+                    is_last,
+                    &last_read_message_id,
+                    &own_nickname,
+                    theme,
                 )
-                .flex_1(),
-            )
+            })
+            .flex_1(),
+        )
     }
 }

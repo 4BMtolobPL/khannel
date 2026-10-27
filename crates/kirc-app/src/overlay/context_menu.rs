@@ -4,7 +4,7 @@
 //! 좌표/노출 플래그는 기존 state와 동일하게 ChatApp이 소유하고, 외부 클릭 시
 //! 닫는 동작은 `on_mouse_down_out`으로 구현한다 (Svelte의 window click listener 대체).
 
-use gpui::{Div, IntoElement, Styled, div, prelude::*, px};
+use gpui::{div, prelude::*, px, Div, IntoElement, Styled};
 
 use crate::theme::Theme;
 
@@ -56,12 +56,8 @@ pub fn context_menu_item(
         .cursor_pointer()
         .hover(|h| match style {
             MenuItemStyle::Normal => h.bg(theme.menu_hover),
-            MenuItemStyle::Accent => h
-                .bg(theme.accent_hover_bg)
-                .text_color(theme.accent_text),
-            MenuItemStyle::Danger => h
-                .bg(theme.danger_hover_bg)
-                .text_color(theme.danger_text),
+            MenuItemStyle::Accent => h.bg(theme.accent_hover_bg).text_color(theme.accent_text),
+            MenuItemStyle::Danger => h.bg(theme.danger_hover_bg).text_color(theme.danger_text),
         })
         .child(
             // Svelte: w-4 text-center opacity-70

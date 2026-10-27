@@ -6,15 +6,14 @@
 //! state에 해당한다.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, IntoElement,
-    MouseButton,
-    MouseDownEvent, ParentElement, Pixels, Point, Render, Styled, TextAlign, Window, div,
-    prelude::*, px,
+    div, prelude::*, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Styled,
+    TextAlign, Window,
 };
 use kirc_core::kirc::types::ServerId;
 
 use crate::model::{Channel, IrcModel, UiServerStatus};
-use crate::theme::{Theme, status_dot_color};
+use crate::theme::{status_dot_color, Theme};
 
 // ==================================== 이벤트 ====================================
 
@@ -142,7 +141,8 @@ impl Render for Sidebar {
                                     .on_click({
                                         let model = self.model.clone();
                                         move |_, _, cx| {
-                                            let _ = model.update(cx, |m, cx| m.select_server(server_id, cx));
+                                            model
+                                                .update(cx, |m, cx| m.select_server(server_id, cx));
                                         }
                                     })
                                     .on_mouse_down(
@@ -248,8 +248,9 @@ impl Sidebar {
                         let channel_name = item.name.clone();
                         let unread = item.unread;
                         // ircStore와 동일하게 current_channel_id는 복합 ID("serverId:channel")
-                        let channel_id =
-                            model.read(cx).get_channel_id(&item_server_id, &channel_name);
+                        let channel_id = model
+                            .read(cx)
+                            .get_channel_id(&item_server_id, &channel_name);
                         let is_selected = current_channel_id.as_ref() == Some(&channel_id);
                         // move 클로저가 channel_name을 소비하지 않도록 리스너용 복제본을 둔다.
                         let listener_channel_name = channel_name.clone();
@@ -267,7 +268,7 @@ impl Sidebar {
                                 let model = model.clone();
                                 let channel_id = channel_id.clone();
                                 move |_, _, cx| {
-                                    let _ = model.update(cx, |m, cx| {
+                                    model.update(cx, |m, cx| {
                                         m.set_current_channel(Some(channel_id.clone()), cx)
                                     });
                                 }
@@ -276,17 +277,15 @@ impl Sidebar {
                             // 두 메뉴가 동시에 뜨는 Svelte 버그를 방지한다.
                             .on_mouse_down(
                                 MouseButton::Right,
-                                cx.listener(
-                                    move |_, event: &MouseDownEvent, _, cx| {
-                                        cx.emit(SidebarEvent::ChannelContextMenu {
-                                            server_id: item_server_id,
-                                            channel_id: channel_id.clone(),
-                                            channel_name: listener_channel_name.clone(),
-                                            position: event.position,
-                                        });
-                                        cx.stop_propagation();
-                                    },
-                                ),
+                                cx.listener(move |_, event: &MouseDownEvent, _, cx| {
+                                    cx.emit(SidebarEvent::ChannelContextMenu {
+                                        server_id: item_server_id,
+                                        channel_id: channel_id.clone(),
+                                        channel_name: listener_channel_name.clone(),
+                                        position: event.position,
+                                    });
+                                    cx.stop_propagation();
+                                }),
                             )
                             .child(
                                 div()

@@ -263,7 +263,7 @@ Phase 3 종료 시점 코드 리뷰에서 도출. 단순 실수보다는 "Svelte
   `impl UiApi` 통째 `#[allow(dead_code)]`는 항목별 허용으로 좁히는 것이 좋다.
 - `model.rs` Topic 분기의 `let _ = server;` 불필요 클론 흔적 제거.
 
-### Phase 4 — 수동 패리티 테스트
+### Phase 4 — 수동 패리티 테스트 (진행 중, 2026-10-27)
 
 Tauri 버전과 나란히 실행해 다음을 검증:
 
@@ -276,6 +276,32 @@ Tauri 버전과 나란히 실행해 다음을 검증:
    gpui 제공 TestAppContext 유틸(있다면)로.
 7. (Phase 3 잔여 항목) "Phase 3 코드 리뷰 → 잔여 항목" 중 패리티 영향 항목 재점검 —
    모달/메뉴 Esc 동작, lock 토글이 GPUI/Tauri 양쪽에서 동일하게 (작동하지 않는) 동작인지 대조.
+
+**진행 내역 (2026-10-27):**
+
+- **모달/컨텍스트 메뉴 Esc 닫기 구현** (Phase 3 리뷰 #1, 패리티 영향 항목):
+  - `action.rs`에 `kirc::Dismiss` 액션 신설, `ChatApp::show`에서 `escape` 전역 바인딩.
+  - 모달: `modal_overlay`가 `on_dismiss` 리스너를 받도록 변경 — 모달 내부 입력은 포커스
+    경로 안에 있으므로 overlay div의 `.on_action`으로 `cancel()` 처리(Svelte `<dialog>`의
+    onclose → nickErrors 정리까지 동일 경로로 상속). `dismissed`된 액션은 버블 단계에서
+    전파를 멈추므로 아래 전역 리스너와 충돌하지 않는다.
+  - 컨텍스트 메뉴: 메뉴는 포커스 경로 밖(sibling) 요소라 `.on_action`으로 받을 수 없다 →
+    `App::on_action`(전역 버블 리스너)으로 ChatApp의 `close_menus` 처리.
+  - 디스패치 근거: gpui(6b985a8) `key_dispatch.rs`/`window.rs` — 액션은 포커스 노드를
+    기점으로 ancestor 체인만 버블링하며, `deferred`는 `defer_draw` 시점에 `parent_node`를
+    캡처해 서브트리의 dispatch 조상 관계를 유지한다.
+- **clippy 경고 정리** (Phase 3 nit): kirc-app 26 → 0 (`let_unit_value`, HashMap entry API,
+  redundant closure, contains_key 등). kirc-core 4 → 0. 남는 1건(`error` field never
+  read)은 `src-tauri` 복사본 쪽으로 Phase 5 삭제 대상이라 그대로 둠.
+- **검증**: `cargo test --workspace` 25개 통과, Wayland 스모크 런(기존 config.json 복원 +
+  서버 액터 기동 + 런 루프 안정 진입) 확인.
+
+**잔여 — 수동 체크리스트 (GUI 조작 필요, 위 1~7):**
+   1~5번 시나리오(서버 연결/해제, 닉 중복, 채널 입퇴장, 메시지/에코, unread, lock,
+   스냅샷 복원, 창 닫기/QUIT 종료)를 Tauri 버전과 나란히 대조해 수동 검증.
+   단 lock 토글 코어 반영 이슈(Phase 3 리뷰 #2)는 문서 결정에 따라 패리티 우선으로
+   그대로 두고 별도 이슈로 분리. Wayland 집중 점검 + macOS IME(한글 입력)는 macOS
+   장비에서 2차 검증.
 
 ### Phase 5 — 잔여 항목 및 정리
 

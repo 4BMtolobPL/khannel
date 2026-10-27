@@ -1,4 +1,5 @@
 use crate::kirc::core::ServerActor;
+use crate::kirc::event::EventSender;
 use crate::kirc::event::{emit_server_added, emit_server_status};
 use crate::kirc::state::app::AppState;
 use crate::kirc::state::kirc::KircState;
@@ -7,7 +8,6 @@ use crate::kirc::types::{ServerCommand, ServerId, ServerStatus};
 use anyhow::{anyhow, Context};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use crate::kirc::event::EventSender;
 use tracing::{debug, info};
 
 pub struct KircManager {
@@ -132,11 +132,7 @@ impl KircManager {
         }
     }
 
-    pub fn join_channel(
-        &self,
-        server_id: ServerId,
-        channel_name: &str,
-    ) -> anyhow::Result<()> {
+    pub fn join_channel(&self, server_id: ServerId, channel_name: &str) -> anyhow::Result<()> {
         let server = self
             .kirc_state
             .get_server(server_id)
@@ -147,11 +143,7 @@ impl KircManager {
         Ok(())
     }
 
-    pub fn part_channel(
-        &self,
-        server_id: ServerId,
-        channel_id: &str,
-    ) -> anyhow::Result<()> {
+    pub fn part_channel(&self, server_id: ServerId, channel_id: &str) -> anyhow::Result<()> {
         let server = self
             .kirc_state
             .get_server(server_id)

@@ -4,7 +4,7 @@
 //! GPUI에서는 [`Theme::current`]가 `cx.window_appearance()`로 동일한 기준으로 선택한다.
 //! (MIGRATION.md Phase 3 표: "Tailwind class → GPUI 스타일 (dark mode: ActiveTheme 환경 or 자체 toggle)")
 
-use gpui::{App, Rgba, WindowAppearance, rgba, rgb};
+use gpui::{rgb, rgba, App, Rgba, WindowAppearance};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
@@ -169,8 +169,8 @@ impl Theme {
             status_connected: green_500,
             status_connecting: yellow_500,
             status_disconnected: red_500,
-            overlay_scrim: rgba(0x0000004d),   // black/30
-            menu_bg: rgba(0x262626f2),         // neutral-800/95
+            overlay_scrim: rgba(0x0000004d), // black/30
+            menu_bg: rgba(0x262626f2),       // neutral-800/95
             menu_hover: neutral_700,
         }
     }

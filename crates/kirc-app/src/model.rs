@@ -73,7 +73,6 @@ pub struct Channel {
     pub topic: Option<String>,
 }
 
-
 fn map_status(status: &kirc_core::kirc::types::ServerStatus) -> UiServerStatus {
     use kirc_core::kirc::types::ServerStatus as S;
     match status {
@@ -307,7 +306,7 @@ impl IrcModel {
                 nick,
                 reason,
             } => {
-                if self.servers.get(&server_id).is_some() {
+                if self.servers.contains_key(&server_id) {
                     let targets: Vec<String> = self
                         .channels
                         .values()
@@ -426,7 +425,7 @@ impl IrcModel {
     // ========================= Store Operations =========================
 
     pub fn ensure_channel(&mut self, server_id: ServerId, channel_name: &str) {
-        if self.servers.get(&server_id).is_none() {
+        if !self.servers.contains_key(&server_id) {
             return;
         }
         let channel_id = self.get_channel_id(&server_id, channel_name);
@@ -446,9 +445,7 @@ impl IrcModel {
             );
         }
 
-        if !self.messages.contains_key(&channel_id) {
-            self.messages.insert(channel_id, Vec::new());
-        }
+        self.messages.entry(channel_id).or_default();
     }
 
     pub fn add_message(&mut self, server_id: ServerId, channel_id: String, message: ChatMessage) {
@@ -456,7 +453,11 @@ impl IrcModel {
             return;
         }
 
-        let channel_unread = self.channels.get(&channel_id).map(|c| c.unread).unwrap_or(0);
+        let channel_unread = self
+            .channels
+            .get(&channel_id)
+            .map(|c| c.unread)
+            .unwrap_or(0);
 
         if let Some(list) = self.messages.get_mut(&channel_id) {
             list.push(message.clone());
@@ -518,13 +519,8 @@ impl IrcModel {
         nickname: String,
         cx: &mut Context<Self>,
     ) {
-        let payload = kirc_core::kirc::commands::ConnectServerPayload::new(
-            None,
-            host,
-            port,
-            tls,
-            nickname,
-        );
+        let payload =
+            kirc_core::kirc::commands::ConnectServerPayload::new(None, host, port, tls, nickname);
         if let Err(e) = self.api.connect_server(payload) {
             tracing::warn!("connect_server failed: {}", e);
         }
@@ -596,15 +592,21 @@ impl IrcModel {
 
     // Phase 3 예약: 모달/입력창 헤더(서버 표시명)에서 사용.
     pub fn current_server(&self) -> Option<&Server> {
-        self.current_server_id.as_ref().and_then(|id| self.servers.get(id))
+        self.current_server_id
+            .as_ref()
+            .and_then(|id| self.servers.get(id))
     }
 
     pub fn current_channel(&self) -> Option<&Channel> {
-        self.current_channel_id.as_ref().and_then(|id| self.channels.get(id))
+        self.current_channel_id
+            .as_ref()
+            .and_then(|id| self.channels.get(id))
     }
 
     pub fn current_messages(&self) -> Option<&Vec<ChatMessage>> {
-        self.current_channel_id.as_ref().and_then(|id| self.messages.get(id))
+        self.current_channel_id
+            .as_ref()
+            .and_then(|id| self.messages.get(id))
     }
 
     pub fn is_locked(&self) -> bool {
@@ -612,11 +614,8 @@ impl IrcModel {
     }
 
     pub fn server_unread(&self) -> HashMap<ServerId, u32> {
-        let mut result: HashMap<ServerId, u32> = self
-            .servers
-            .keys()
-            .map(|id| (*id, 0u32))
-            .collect();
+        let mut result: HashMap<ServerId, u32> =
+            self.servers.keys().map(|id| (*id, 0u32)).collect();
         for channel in self.channels.values() {
             *result.entry(channel.server_id).or_insert(0) += channel.unread;
         }
@@ -626,11 +625,15 @@ impl IrcModel {
     // ========================= UI 액션 (명령 전송) =========================
 
     pub fn send_message(&mut self, text: &str, cx: &mut Context<Self>) {
-        let Some(server_id) = self.current_server_id else { return };
+        let Some(server_id) = self.current_server_id else {
+            return;
+        };
         if text.trim().is_empty() || self.is_locked() {
             return;
         }
-        let Some(target) = self.current_channel().map(|c| c.name.clone()) else { return };
+        let Some(target) = self.current_channel().map(|c| c.name.clone()) else {
+            return;
+        };
 
         if let Err(e) = self.api.send_message(server_id, &target, text) {
             tracing::warn!("send_message failed: {}", e);
@@ -639,8 +642,12 @@ impl IrcModel {
     }
 
     pub fn toggle_lock(&mut self, cx: &mut Context<Self>) {
-        let Some(server_id) = self.current_server_id else { return };
-        let Some(channel_name) = self.current_channel_id.clone() else { return };
+        let Some(server_id) = self.current_server_id else {
+            return;
+        };
+        let Some(channel_name) = self.current_channel_id.clone() else {
+            return;
+        };
 
         let payload = kirc_core::kirc::commands::ChannelPayload::new(server_id, channel_name);
         let result = if self.is_locked() {
@@ -657,11 +664,11 @@ impl IrcModel {
 
     // 채널 컨텍스트 메뉴(Leave)에서 사용.
     pub fn leave_channel(&mut self, channel_id: &str, cx: &mut Context<Self>) {
-        let Some(channel) = self.channels.get(channel_id) else { return };
-        let payload = kirc_core::kirc::commands::ChannelPayload::new(
-            channel.server_id,
-            channel.name.clone(),
-        );
+        let Some(channel) = self.channels.get(channel_id) else {
+            return;
+        };
+        let payload =
+            kirc_core::kirc::commands::ChannelPayload::new(channel.server_id, channel.name.clone());
 
         if let Err(e) = self.api.leave_channel(&payload) {
             tracing::warn!("leave_channel failed: {}", e);
@@ -680,7 +687,9 @@ impl IrcModel {
     // 서버 컨텍스트 메뉴(Connect)에서 사용.
     pub fn connect_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         // 기존 서버 재연결 (스냅샷 서버)
-        let Some(server) = self.servers.get(&server_id).cloned() else { return };
+        let Some(server) = self.servers.get(&server_id).cloned() else {
+            return;
+        };
 
         let payload = kirc_core::kirc::commands::ConnectServerPayload::new(
             Some(server_id),
@@ -696,16 +705,9 @@ impl IrcModel {
     }
 
     // ChangeNicknameModal 제출에서 사용.
-    pub fn change_nickname(
-        &mut self,
-        server_id: ServerId,
-        new_nick: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let payload = kirc_core::kirc::commands::ChangeNickPayload::new(
-            server_id,
-            new_nick.to_string(),
-        );
+    pub fn change_nickname(&mut self, server_id: ServerId, new_nick: &str, cx: &mut Context<Self>) {
+        let payload =
+            kirc_core::kirc::commands::ChangeNickPayload::new(server_id, new_nick.to_string());
         if let Err(e) = self.api.change_nickname(&payload) {
             tracing::warn!("change_nickname failed: {}", e);
         }

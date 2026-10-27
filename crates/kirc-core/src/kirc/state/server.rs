@@ -93,10 +93,7 @@ impl ServerState {
         }
     }
 
-    pub fn with_channel(
-        config: ServerConfig,
-        channels: HashMap<ChannelId, ChannelState>,
-    ) -> Self {
+    pub fn with_channel(config: ServerConfig, channels: HashMap<ChannelId, ChannelState>) -> Self {
         Self {
             runtime: Mutex::new(ServerRuntime::Disconnected),
             current_nickname: Mutex::new(config.nickname().to_string()),

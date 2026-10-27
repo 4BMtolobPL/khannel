@@ -8,14 +8,15 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 use kirc_core::kirc::types::ServerId;
 
+use crate::action::Dismiss;
 use crate::api::UiApi;
 use crate::model::IrcModel;
-use crate::overlay::modal::{DismissEvent, error_text, modal_overlay, modal_panel};
+use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 
@@ -39,11 +40,15 @@ impl ChangeNickModal {
     ) -> Self {
         let nick = cx.new(|cx| TextInput::new(cx).with_placeholder("새 닉네임"));
 
-        cx.subscribe_in(&nick, window, |this, _input, event: &TextInputEvent, window, cx| {
-            if let TextInputEvent::Submit(_) = event {
-                this.submit(window, cx);
-            }
-        })
+        cx.subscribe_in(
+            &nick,
+            window,
+            |this, _input, event: &TextInputEvent, window, cx| {
+                if let TextInputEvent::Submit(_) = event {
+                    this.submit(window, cx);
+                }
+            },
+        )
         .detach();
 
         // 성공 감지 → 모달 닫기 (Svelte: $effect에서 nickSuccess 확인)
@@ -80,7 +85,8 @@ impl ChangeNickModal {
         self.nick.update(cx, |input, cx| input.clear(window, cx));
         // 이전 실패 에러 제거 (Svelte: 모달 열림/닫힘 effect에서 nickErrors 정리)
         if let Some(server_id) = server_id {
-            let _ = self.model.update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
+            self.model
+                .update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
         }
         cx.notify();
     }
@@ -92,21 +98,24 @@ impl ChangeNickModal {
 
     fn clear_error(&self, cx: &mut App) {
         if let Some(server_id) = self.server_id {
-            let _ = self.model.update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
+            self.model
+                .update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
         }
     }
 
     fn submit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(server_id) = self.server_id else { return };
+        let Some(server_id) = self.server_id else {
+            return;
+        };
         let new_nick = self.nick.read(cx).text().trim().to_string();
         if new_nick.is_empty() {
             return;
         }
 
         // Svelte changeNickSubmit: 제출 전 기존 에러 제거
-        let _ = self.model.update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
-        let _ = self
-            .model
+        self.model
+            .update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
+        self.model
             .update(cx, |m, cx| m.change_nickname(server_id, &new_nick, cx));
     }
 
@@ -119,9 +128,12 @@ impl ChangeNickModal {
 impl Render for ChangeNickModal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
-        let error = self
-            .server_id
-            .and_then(|server_id| self.model.read(cx).nick_error(&server_id).map(str::to_string));
+        let error = self.server_id.and_then(|server_id| {
+            self.model
+                .read(cx)
+                .nick_error(&server_id)
+                .map(str::to_string)
+        });
 
         let panel = modal_panel(px(320.), px(16.), theme) // w-80 p-4
             .child(
@@ -191,6 +203,10 @@ impl Render for ChangeNickModal {
                     ),
             );
 
-        modal_overlay(panel, theme)
+        modal_overlay(
+            panel,
+            theme,
+            cx.listener(|this, _: &Dismiss, window, cx| this.cancel(window, cx)),
+        )
     }
 }

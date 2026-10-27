@@ -130,12 +130,7 @@ impl KircApi {
             .context("Can't find server")?;
         server.set_channel_locked(payload.channel(), true);
 
-        emit_channel_lock_changed(
-            ui_sink,
-            payload.server_id(),
-            payload.channel(),
-            true,
-        );
+        emit_channel_lock_changed(ui_sink, payload.server_id(), payload.channel(), true);
 
         Ok(())
     }
@@ -150,12 +145,7 @@ impl KircApi {
             server.set_channel_locked(payload.channel(), false);
         }
 
-        emit_channel_lock_changed(
-            ui_sink,
-            payload.server_id(),
-            payload.channel(),
-            false,
-        );
+        emit_channel_lock_changed(ui_sink, payload.server_id(), payload.channel(), false);
 
         Ok(())
     }
@@ -384,7 +374,10 @@ pub mod payload {
 
     impl ChangeNickPayload {
         pub fn new(server_id: ServerId, new_nick: String) -> Self {
-            Self { server_id, new_nick }
+            Self {
+                server_id,
+                new_nick,
+            }
         }
     }
 }

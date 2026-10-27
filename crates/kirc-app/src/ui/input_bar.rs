@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, Focusable, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    div, prelude::*, px, App, ClickEvent, Context, Entity, Focusable, IntoElement, ParentElement,
+    Render, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::api::UiApi;
@@ -32,11 +32,15 @@ impl InputBar {
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Type a message"));
 
         // Enter 제출 → 메시지 전송 + 입력 클리어 (Svelte sendMessage)
-        cx.subscribe_in(&input, window, |this, _input, event: &TextInputEvent, window, cx| {
-            if let TextInputEvent::Submit(text) = event {
-                this.send_text(text.to_string(), window, cx);
-            }
-        })
+        cx.subscribe_in(
+            &input,
+            window,
+            |this, _input, event: &TextInputEvent, window, cx| {
+                if let TextInputEvent::Submit(text) = event {
+                    this.send_text(text.to_string(), window, cx);
+                }
+            },
+        )
         .detach();
 
         // 잠금 상태 → 입력 비활성화/플레이스홀더 갱신 (Svelte disabled/placeholder)
@@ -45,7 +49,11 @@ impl InputBar {
             this.input.update(cx, |input, cx| {
                 input.set_enabled(!locked, cx);
                 input.set_placeholder(
-                    if locked { "Channel is locked" } else { "Type a message" },
+                    if locked {
+                        "Channel is locked"
+                    } else {
+                        "Type a message"
+                    },
                     cx,
                 );
             });
@@ -76,17 +84,22 @@ impl InputBar {
         if text.trim().is_empty() {
             return;
         }
-        let _ = self.model.update(cx, |m, cx| m.send_message(&text, cx));
+        self.model.update(cx, |m, cx| m.send_message(&text, cx));
         self.input.update(cx, |input, cx| input.clear(window, cx));
     }
 
     fn toggle_lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.model.update(cx, |m, cx| m.toggle_lock(cx));
+        self.model.update(cx, |m, cx| m.toggle_lock(cx));
         // Svelte toggleLock이 msgInput을 클리어하는 것과 동일.
         self.input.update(cx, |input, cx| input.clear(window, cx));
     }
 
-    fn render_button(&self, id: &'static str, label: &'static str, theme: Theme) -> gpui::Stateful<gpui::Div> {
+    fn render_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        theme: Theme,
+    ) -> gpui::Stateful<gpui::Div> {
         // Svelte: text-sm px-2 py-1 rounded hover:bg-neutral-200/700
         div()
             .id(id)
@@ -115,9 +128,12 @@ impl Render for InputBar {
                 div()
                     .flex()
                     .gap_x(px(8.))
-                    .child(self.render_button("lock", if is_locked { "🔒" } else { "🔓" }, theme).on_click(
-                        cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_lock(window, cx)),
-                    ))
+                    .child(
+                        self.render_button("lock", if is_locked { "🔒" } else { "🔓" }, theme)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.toggle_lock(window, cx)
+                            })),
+                    )
                     .child(
                         // 입력 상자: flex-1 rounded px-3 py-2 text-sm border + focus ring
                         div()
@@ -149,9 +165,11 @@ impl Render for InputBar {
                             .text_color(theme.text_inverse)
                             .when(!is_locked, |d| d.hover(|h| h.bg(theme.accent_hover)))
                             .when(is_locked, |d| d.opacity(0.4))
-                            .on_click(cx.listener(
-                                |this, _: &ClickEvent, window, cx| this.send(window, cx),
-                            ))
+                            .on_click(
+                                cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.send(window, cx)
+                                }),
+                            )
                             .child("Send"),
                     ),
             )

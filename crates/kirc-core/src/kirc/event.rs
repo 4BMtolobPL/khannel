@@ -155,12 +155,7 @@ impl UIEventBuilder {
         self
     }
 
-    pub fn quit(
-        mut self,
-        server_id: ServerId,
-        nickname: String,
-        reason: Option<String>,
-    ) -> Self {
+    pub fn quit(mut self, server_id: ServerId, nickname: String, reason: Option<String>) -> Self {
         self.payload = Some(UIEventPayload::Quit {
             server_id,
             nick: nickname,
@@ -180,12 +175,7 @@ impl UIEventBuilder {
         self
     }
 
-    pub fn topic(
-        mut self,
-        server_id: ServerId,
-        channel: String,
-        topic: Option<String>,
-    ) -> Self {
+    pub fn topic(mut self, server_id: ServerId, channel: String, topic: Option<String>) -> Self {
         self.payload = Some(UIEventPayload::Topic {
             server_id,
             channel,
@@ -338,7 +328,9 @@ mod tests {
 
         emit_server_status(&sink, server_id, status());
         emit_channel_lock_changed(&sink, server_id, "#test", true);
-        emit_ui_event(&sink).join(server_id, "#test".to_string(), "kim".to_string()).emit();
+        emit_ui_event(&sink)
+            .join(server_id, "#test".to_string(), "kim".to_string())
+            .emit();
 
         let first = rx.recv().await.unwrap();
         let second = rx.recv().await.unwrap();

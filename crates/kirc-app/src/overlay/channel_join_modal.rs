@@ -5,13 +5,14 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 
+use crate::action::Dismiss;
 use crate::api::UiApi;
 use crate::model::IrcModel;
-use crate::overlay::modal::{DismissEvent, error_text, modal_overlay, modal_panel};
+use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 
@@ -34,11 +35,15 @@ impl ChannelJoinModal {
     ) -> Self {
         let name = cx.new(|cx| TextInput::new(cx).with_placeholder("#channel"));
 
-        cx.subscribe_in(&name, window, |this, _input, event: &TextInputEvent, window, cx| {
-            if let TextInputEvent::Submit(_) = event {
-                this.submit(window, cx);
-            }
-        })
+        cx.subscribe_in(
+            &name,
+            window,
+            |this, _input, event: &TextInputEvent, window, cx| {
+                if let TextInputEvent::Submit(_) = event {
+                    this.submit(window, cx);
+                }
+            },
+        )
         .detach();
 
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
@@ -85,8 +90,7 @@ impl ChannelJoinModal {
         let server_id = self.model.read(cx).current_server_id().copied();
         let Some(server_id) = server_id else { return };
 
-        let _ = self
-            .model
+        self.model
             .update(cx, |m, cx| m.join_channel(server_id, &name, cx));
         cx.emit(DismissEvent);
     }
@@ -168,6 +172,10 @@ impl Render for ChannelJoinModal {
                     ),
             );
 
-        modal_overlay(panel, theme)
+        modal_overlay(
+            panel,
+            theme,
+            cx.listener(|this, _: &Dismiss, window, cx| this.cancel(window, cx)),
+        )
     }
 }

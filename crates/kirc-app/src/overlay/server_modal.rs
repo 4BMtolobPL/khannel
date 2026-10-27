@@ -6,14 +6,15 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 
+use crate::action::Dismiss;
 use crate::api::UiApi;
 use crate::model::IrcModel;
 use crate::overlay::modal::{
-    DismissEvent, error_text, field_label, modal_header, modal_overlay, modal_panel,
+    error_text, field_label, modal_header, modal_overlay, modal_panel, DismissEvent,
 };
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
@@ -40,9 +41,9 @@ impl ServerModal {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let host = cx.new(|cx| TextInput::new(cx));
+        let host = cx.new(TextInput::new);
         let port = cx.new(|cx| TextInput::new(cx).with_text(DEFAULT_PORT));
-        let nickname = cx.new(|cx| TextInput::new(cx));
+        let nickname = cx.new(TextInput::new);
 
         // Enter 제출 (host/nickname 입력창에서) → submit
         for input in [&host, &port, &nickname] {
@@ -74,7 +75,8 @@ impl ServerModal {
     /// 모달을 열 때 상태를 초기값으로 되돌린다 (Svelte: 컴포넌트 새로 마운트).
     pub fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.host.update(cx, |input, cx| input.clear(window, cx));
-        self.port.update(cx, |input, cx| input.set_text(DEFAULT_PORT, window, cx));
+        self.port
+            .update(cx, |input, cx| input.set_text(DEFAULT_PORT, window, cx));
         self.nickname
             .update(cx, |input, cx| input.clear(window, cx));
         self.tls = true;
@@ -116,7 +118,7 @@ impl ServerModal {
             return;
         }
 
-        let _ = self.model.update(cx, |m, cx| {
+        self.model.update(cx, |m, cx| {
             m.add_server(host, port.unwrap(), self.tls, nickname, cx)
         });
         self.errors.clear();
@@ -134,14 +136,28 @@ impl Render for ServerModal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
 
-        let host_error = self.errors.iter().find(|(field, _)| *field == "host").map(|(_, text)| *text);
-        let port_error = self.errors.iter().find(|(field, _)| *field == "port").map(|(_, text)| *text);
-        let nick_error = self.errors.iter().find(|(field, _)| *field == "nickname").map(|(_, text)| *text);
+        let host_error = self
+            .errors
+            .iter()
+            .find(|(field, _)| *field == "host")
+            .map(|(_, text)| *text);
+        let port_error = self
+            .errors
+            .iter()
+            .find(|(field, _)| *field == "port")
+            .map(|(_, text)| *text);
+        let nick_error = self
+            .errors
+            .iter()
+            .find(|(field, _)| *field == "nickname")
+            .map(|(_, text)| *text);
 
         let panel = modal_panel(px(448.), px(24.), theme) // max-w-md p-6
-            .child(modal_header("서버 연결", theme, cx.listener(
-                |this, _: &ClickEvent, window, cx| this.cancel(window, cx),
-            )))
+            .child(modal_header(
+                "서버 연결",
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| this.cancel(window, cx)),
+            ))
             .child(
                 div()
                     .flex_col()
@@ -263,11 +279,9 @@ impl Render for ServerModal {
                                     .py(px(8.))
                                     .text_sm()
                                     .hover(|h| h.bg(theme.menu_hover))
-                                    .on_click(cx.listener(
-                                        |this, _: &ClickEvent, window, cx| {
-                                            this.cancel(window, cx)
-                                        },
-                                    ))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.cancel(window, cx)
+                                    }))
                                     .child("취소"),
                             )
                             .child(
@@ -282,16 +296,18 @@ impl Render for ServerModal {
                                     .bg(theme.accent)
                                     .text_color(theme.text_inverse)
                                     .hover(|h| h.bg(theme.accent_hover))
-                                    .on_click(cx.listener(
-                                        |this, _: &ClickEvent, window, cx| {
-                                            this.submit(window, cx)
-                                        },
-                                    ))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.submit(window, cx)
+                                    }))
                                     .child("연결"),
                             ),
                     ),
             );
 
-        modal_overlay(panel, theme)
+        modal_overlay(
+            panel,
+            theme,
+            cx.listener(|this, _: &Dismiss, window, cx| this.cancel(window, cx)),
+        )
     }
 }
