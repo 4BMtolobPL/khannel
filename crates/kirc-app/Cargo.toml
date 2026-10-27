@@ -1,0 +1,14 @@
+[package]
+name = "kirc-app"
+version = "0.1.0"
+description = "IRC client UI (GPUI)"
+edition = "2021"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed.git" }
+# 앱 부트스트랩(Platform 제공)은 gpui_platform 크레이트가 담당.
+# 대상 OS(Linux X11/Wayland + macOS)에 맞춰 linux 백엔드 feature를 켠다.
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = [
+    "wayland",
+    "x11",
+] }

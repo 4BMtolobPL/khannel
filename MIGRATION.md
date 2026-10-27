@@ -65,9 +65,13 @@ src-tauri/ , src/           # 전환 기간 동안 유지 → 패리티 확인 �
 ```toml
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed.git" }
+# 앱 부트스트랩(Platform 제공)은 gpui_platform 크레이트가 담당.
+# 대상 OS(Linux X11/Wayland + macOS)에 맞춰 linux 백엔드 feature를 켠다.
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = ["wayland", "x11"] }
 ```
 
-- 업스트림 main에 계속 추적하며 필요한 시점에 `Cargo lock` 갱신.
+- 업스트림 main 추적 시 주의: `Application::new()`는 최신 업스트림에서 **제거**됨.
+  앱 생성은 `use gpui_platform::application;` → `application().run(|cx| ...)` 패턴 사용.
 - pre-1.0이므로 **breaking change 빈번** → lock 파일을 커밋으로 고정하고,
   업스트림 업데이트는 별도 PR로 분리해 회귀를 명확히 격리.
 - Linux 빌드에 필요한 시스템 패키지(libx11, libwayland, fontconfig 등)는 zed 저장소
@@ -132,8 +136,10 @@ fn main() {
     let sink = Arc::new(tx);           // impl UiSink for UnboundedSender 래퍼
     // ... KircState 복원, Manager 생성(rt, sink) ...
 
-    gpui::Application::new().run(|cx| {
-        // 1) IrcModel Entity: rx 이벤트 소비 → 상태 반영 (= ircService.ts 포팅)
+    // 최신 업스트림에서는 Application::new()가 제거되어 gpui_platform::application() 사용.
+    application().run(|cx| {
+    // 최신 업스트림에서는 Application::new()가 제거되어 gpui_platform::application() 사용.
+    application().run(|cx| {        // 1) IrcModel Entity: rx 이벤트 소비 → 상태 반영 (= ircService.ts 포팅)
         // 2) ChatApp Entity: render — 사이드바/메시지뷰/입력창
     });
 }
