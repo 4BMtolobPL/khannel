@@ -468,6 +468,11 @@ impl EntityInputHandler for TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 플랫폼 IME가 직접 호출하는 경로 — 키 액션과 달리 여기서 가드해야
+        // 잠금(disabled) 상태에서도 입력이 주입되지 않는다.
+        if !self.enabled {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -493,6 +498,9 @@ impl EntityInputHandler for TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.enabled {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))

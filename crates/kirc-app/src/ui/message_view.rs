@@ -220,21 +220,28 @@ impl Render for MessageView {
         let own_nickname = model.current_server().map(|server| server.nickname.clone());
 
         // Svelte p-3: 메시지 영역 패딩
-        div().flex_1().min_h_0().overflow_hidden().p(px(12.)).child(
-            list(self.list_state.clone(), move |index, _window, _cx| {
-                let Some(message) = messages.get(index) else {
-                    return div().into_any();
-                };
-                let is_last = index + 1 >= messages.len();
-                Self::render_item(
-                    message,
-                    is_last,
-                    &last_read_message_id,
-                    &own_nickname,
-                    theme,
-                )
-            })
-            .flex_1(),
-        )
+        div()
+            .flex() // div 기본 display는 Block — flex_1/flex_col은 display:flex여야 동작
+            .flex_1()
+            .min_h_0()
+            .flex_col()
+            .overflow_hidden()
+            .p(px(12.))
+            .child(
+                list(self.list_state.clone(), move |index, _window, _cx| {
+                    let Some(message) = messages.get(index) else {
+                        return div().into_any();
+                    };
+                    let is_last = index + 1 >= messages.len();
+                    Self::render_item(
+                        message,
+                        is_last,
+                        &last_read_message_id,
+                        &own_nickname,
+                        theme,
+                    )
+                })
+                .flex_1(), // 부모가 flex (column)이므로 남은 높이를 채운다
+            )
     }
 }
