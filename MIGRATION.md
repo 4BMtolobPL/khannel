@@ -225,6 +225,44 @@ fn main() {
 UserMessage/Join/Part/Quit/Nick/Topic/Error 각 케이스 그대로, 단
 Svelte 반응성 대신 "변경사항 → `cx.notify()`"로 변경.
 
+#### Phase 3 코드 리뷰 → 잔여 항목 (2026-10-27)
+
+Phase 3 종료 시점 코드 리뷰에서 도출. 단순 실수보다는 "Svelte도 원래 그렇다"로
+상속된 문제가 많으므로 패리티 회귀가 아니라 **후속 이슈로 분리해 해결**한다.
+
+**버그/UX (Phase 4에서 검증 및 수정)**
+
+1. **모달/컨텍스트 메뉴에 Esc 닫기가 없다.**
+   - Svelte `ChangeNicknameModal`은 네이티브 `<dialog>`(`Modal.svelte`)이라 Esc로 닫히면
+     `onclose` → `nickErrors` 정리까지 따라갔다. GPUI 모달 3종과 컨텍스트 메뉴에는
+     Esc-to-dismiss 바인딩이 전혀 없다 → `key_context` 지정 + Esc 액션 바인딩으로 보완.
+2. **`IrcModel::toggle_lock`이 복합 ID(`serverId:channel`)를 그대로 코어에 전달한다.**
+   - 코어의 채널 맵(`ServerState::channels`)은 채널명 키 기준이라 `set_channel_locked`가
+     항상 no-op이 되고, `emit_channel_lock_changed`는 무조건 발행된다. 즉 UI 배지는 토글돼도
+     코어 lock 상태에는 전혀 반영되지 않는다(스냅샷에도 남지 않음 → 세션 한정 상태).
+   - 단 원본 Svelte도 동일(`toggleLock` → `channel = ircStore.currentChannelId`)하므로,
+     이번 마이그레이션에서는 패리티 우선으로 그대로 둔다. **"코어 채널 키 정규화(lock 채널명)
+     이슈"로 Phase 4/5 사이 분리**해서 해결할 것.
+
+**경미한 항목 (nits)**
+
+- `ui/sidebar.rs` 서버 row 선택 배경이 외곽 row에 걸려 채널 리스트 영역까지 덮인다
+  (Svelte는 서버 *버튼*에만 배경). 의도한 클러스터 스타일이 아니라면 내부 row로 이동.
+- 채널 row hover가 `theme.hover`(neutral-100/800)인데 Svelte 채널 hover는 neutral-200/700 —
+  서버 row hover와 톤이 분리돼 있었다. `Theme`에 채널 hover 톤 분리 추가 검토.
+- `chat_app.rs` render 안 `window.focus()`: GPUI에서 지양되는 패턴. 포커스 경쟁/플리커가
+  보이면 `window.defer(cx, ...)`로 빼기(zed thread_view.rs 참고).
+- `ServerModal` 제출 실패(예: "Already connecting") 시에도 모달이 즉시 닫힌다(warn만 기록).
+  Svelte는 `await invoke`가 날아가도 모달이 열려 있었다. connect 에러를 모달 에러 영역으로
+  표시 + Svelte의 `connecting`/"연결 중..." disabled 상태 복원 여지.
+- `Topic` 정리(Topic이 None) 시 `IrcModel`은 `"Topic set to: "` (Svelte는 `"null"`) —
+  표시 문자열 정책 통일 필요. 관련: `core.rs` TOPIC emit이 None을 실제 전달하는지 확인.
+- 메뉴 등장 `transition:scale` 애니메이션은 드랍됨 (GPUI 자체 스타일 애니메이션 검토 여지).
+- clippy 경고 잔량: kirc-app 26 / kirc-core 4 (let_unit_value, HashMap entry API,
+  redundant closure 등) — `cargo clippy --fix`로 대부분 해소 가능.
+  `impl UiApi` 통째 `#[allow(dead_code)]`는 항목별 허용으로 좁히는 것이 좋다.
+- `model.rs` Topic 분기의 `let _ = server;` 불필요 클론 흔적 제거.
+
 ### Phase 4 — 수동 패리티 테스트
 
 Tauri 버전과 나란히 실행해 다음을 검증:
@@ -236,6 +274,8 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 5. Wayland 집중 점검 + macOS(하이엔드 한글 입력, IME) 2차 검증
 6. (선택) 이전 구현이 있던 유닛 테스트는 kirc-core로 이식, 새 앱의 통합 테스트는
    gpui 제공 TestAppContext 유틸(있다면)로.
+7. (Phase 3 잔여 항목) "Phase 3 코드 리뷰 → 잔여 항목" 중 패리티 영향 항목 재점검 —
+   모달/메뉴 Esc 동작, lock 토글이 GPUI/Tauri 양쪽에서 동일하게 (작동하지 않는) 동작인지 대조.
 
 ### Phase 5 — 잔여 항목 및 정리
 
