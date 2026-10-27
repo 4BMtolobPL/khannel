@@ -319,6 +319,13 @@ Tauri 버전과 나란히 실행해 다음을 검증:
    단 lock 토글 코어 반영 이슈(Phase 3 리뷰 #2)는 문서 결정에 따라 패리티 우선으로
    그대로 두고 별도 이슈로 분리. Wayland 집중 점검 + macOS IME(한글 입력)는 macOS
    장비에서 2차 검증.
+**macOS 1차 검증 결과 (2026-10-27, ccdbecb에서 수정):**
+   - macOS에서 텍스트가 전혀 렌더되지 않음 → `gpui_platform`에 `font-kit` feature
+     추가(gpui_macos 전용 feature, linux 빌드 영향 없음)로 해결.
+   - 반투명 팔레트가 네이티브 불투명 배경에 가려짐 → `WindowOptions.window_background`
+     를 `Transparent`로 설정.
+   - 잠금 버튼 이모지가 중앙 정렬되지 않음 → 버튼 flex 가운데 정렬.
+   - macOS IME(한글 입력) 상세 검증은 잔여 — Wayland 스모크 반복으로 대체 중.
 
 ### Phase 5 — 잔여 항목 및 정리
 
