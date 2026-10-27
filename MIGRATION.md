@@ -295,6 +295,20 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   read)은 `src-tauri` 복사본 쪽으로 Phase 5 삭제 대상이라 그대로 둠.
 - **검증**: `cargo test --workspace` 25개 통과, Wayland 스모크 런(기존 config.json 복원 +
   서버 액터 기동 + 런 루프 안정 진입) 확인.
+- **패리티 테스트에서 발견·수정 (2026-10-27, 4b09e25/4d0469b):**
+  1. MessageView 높이 붕괴 — gpui `div` 기본 display는 Block이라 `.flex_col()` 단독으로는
+     flex 배치가 안 됐음(`flex_1` 무시). 모든 컬럼 컨테이너에 `.flex()` 추가
+     (chat main / sidebar / 서버 row / 모달 폼 body) + MessageView 루트 내부
+     `list.flex_1()` 컨테이너에도 `.flex().flex_col()` 적용.
+  2. 모달 뒤쪽 클릭 통과 — gpui는 겹친 서브트리에 마우스 이벤트를 z-order 순으로 전부
+     발행하므로 리스너 없는 스크림은 클릭을 뒤로 통과시켰음. 스크림에 down/up
+     `stop_propagation` 리스너 추가 (패널 자식은 먼저 받으므로 영향 없음).
+  3. 잠금 채널에서 IME 입력 주입됨 — 키 액션에는 `enabled` 가드가 있었으나 플랫폼 IME가
+     직접 호출하는 `replace_text_in_range`/`replace_and_mark_text_in_range`에는 없었음.
+     두 핸들러에 가드 추가.
+  - **교훈**: gpui에서 `flex_col`/`flex_row`는 display 설정이 따로 필요하다.
+    스타일 포팅 시 `.flex()` 누락은 증상("크기가 0처럼 보임")과 원인이 멀어 추적 비용이 크다.
+  - **교훈**: disabled 처리는 키 액션뿐 아니라 `EntityInputHandler`(IME) 경로까지 막아야 한다.
 
 **잔여 — 수동 체크리스트 (GUI 조작 필요, 위 1~7):**
    1~5번 시나리오(서버 연결/해제, 닉 중복, 채널 입퇴장, 메시지/에코, unread, lock,
