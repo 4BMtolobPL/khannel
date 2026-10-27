@@ -1,5 +1,5 @@
 use crate::kirc::core::ServerActor;
-use crate::kirc::emits::{emit_server_added, emit_server_status};
+use crate::kirc::event::{emit_server_added, emit_server_status};
 use crate::kirc::state::app::AppState;
 use crate::kirc::state::kirc::KircState;
 use crate::kirc::types::server::ServerConfig;
@@ -7,13 +7,13 @@ use crate::kirc::types::{ServerCommand, ServerId, ServerStatus};
 use anyhow::{anyhow, Context};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use tauri::AppHandle;
+use crate::kirc::event::EventSender;
 use tracing::{debug, info};
 
-pub(crate) struct KircManager {
+pub struct KircManager {
     kirc_state: Arc<KircState>,
     app_state: AtomicU8,
-    app_handle: AppHandle,
+    ui_sink: EventSender,
 }
 
 // private
@@ -43,6 +43,10 @@ impl KircManager {
         self.set_app_state(AppState::ShuttingDown);
     }
 
+    pub fn kirc_state(&self) -> &Arc<KircState> {
+        &self.kirc_state
+    }
+
     fn run_server(&self, server_id: ServerId) -> anyhow::Result<()> {
         let server = self
             .kirc_state
@@ -50,7 +54,7 @@ impl KircManager {
             .context("Server not found")?;
 
         info!(server_id = %server_id, "Spawn server actor");
-        let actor = ServerActor::new(server_id, server.clone(), self.app_handle.clone());
+        let actor = ServerActor::new(server_id, server.clone(), self.ui_sink.clone());
         let handle = tokio::spawn(actor.run());
 
         server.transition_to_connecting(handle);
@@ -58,9 +62,9 @@ impl KircManager {
     }
 }
 
-// pub(in crate::kirc)
+// pub
 impl KircManager {
-    pub(in crate::kirc) fn connect_server(
+    pub fn connect_server(
         &self,
         server_id: Option<ServerId>,
         config: ServerConfig,
@@ -82,37 +86,37 @@ impl KircManager {
             // New server
             let sid = self.kirc_state.add_server(config.clone())?;
             emit_server_added(
-                &self.app_handle,
+                &self.ui_sink,
                 sid,
                 config.server(),
                 config.port(),
                 config.use_tls(),
                 config.nickname(),
                 ServerStatus::Disconnected,
-            )?;
+            );
             sid
         };
 
         self.run_server(server_id)?;
-        emit_server_status(&self.app_handle, server_id, ServerStatus::Connecting)?;
+        emit_server_status(&self.ui_sink, server_id, ServerStatus::Connecting);
 
         Ok(())
     }
 
-    pub(in crate::kirc) fn disconnect_server(&self, server_id: ServerId) -> anyhow::Result<()> {
+    pub fn disconnect_server(&self, server_id: ServerId) -> anyhow::Result<()> {
         if let Some(server) = self.kirc_state.get_server(server_id) {
             server.disconnect();
-            emit_server_status(&self.app_handle, server_id, server.status())?;
+            emit_server_status(&self.ui_sink, server_id, server.status());
             Ok(())
         } else {
             Err(anyhow!("Server not found"))
         }
     }
 
-    pub(in crate::kirc) fn cancel_connect(&self, server_id: ServerId) -> anyhow::Result<()> {
+    pub fn cancel_connect(&self, server_id: ServerId) -> anyhow::Result<()> {
         if let Some(server) = self.kirc_state.get_server(server_id) {
             if server.abort_connecting() {
-                emit_server_status(&self.app_handle, server_id, ServerStatus::Failed)?;
+                emit_server_status(&self.ui_sink, server_id, ServerStatus::Failed);
             }
             Ok(())
         } else {
@@ -120,7 +124,7 @@ impl KircManager {
         }
     }
 
-    pub(in crate::kirc) fn process_auto_connect(&self) {
+    pub fn process_auto_connect(&self) {
         let server_ids: Vec<ServerId> = self.kirc_state.get_all_servers().keys().cloned().collect();
         debug!(server_id = ?server_ids, "Auto-connecting servers");
         for server_id in server_ids {
@@ -128,7 +132,7 @@ impl KircManager {
         }
     }
 
-    pub(in crate::kirc) fn join_channel(
+    pub fn join_channel(
         &self,
         server_id: ServerId,
         channel_name: &str,
@@ -143,7 +147,7 @@ impl KircManager {
         Ok(())
     }
 
-    pub(in crate::kirc) fn part_channel(
+    pub fn part_channel(
         &self,
         server_id: ServerId,
         channel_id: &str,
@@ -161,17 +165,17 @@ impl KircManager {
     }
 }
 
-// pub(crate)
+// pub
 impl KircManager {
-    pub(crate) fn new(kirc_state: Arc<KircState>, app_handle: AppHandle) -> Self {
+    pub fn new(kirc_state: Arc<KircState>, ui_sink: EventSender) -> Self {
         Self {
             kirc_state,
             app_state: AtomicU8::new(AppState::Running.as_u8()),
-            app_handle,
+            ui_sink,
         }
     }
 
-    pub(crate) async fn shutdown(&self) {
+    pub async fn shutdown(&self) {
         // 1. 상태 전이 AppState -> ShuttingDown (State method 호출 필요)
         self.prepare_shutdown();
 

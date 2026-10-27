@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use tracing::debug;
 
-pub(crate) fn load<T, A>(path: &Path) -> anyhow::Result<T>
+pub fn load<T, A>(path: &Path) -> anyhow::Result<T>
 where
     T: Memento<A> + DeserializeOwned + Default,
 {
@@ -19,7 +19,7 @@ where
     Ok(snapshot)
 }
 
-pub(crate) fn save<T, A>(path: &Path, snapshot: T) -> anyhow::Result<()>
+pub fn save<T, A>(path: &Path, snapshot: T) -> anyhow::Result<()>
 where
     T: Memento<A> + Serialize,
 {

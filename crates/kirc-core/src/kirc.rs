@@ -1,8 +1,8 @@
-pub(crate) mod commands;
-mod core;
-mod ctcp;
-mod emits;
-pub(crate) mod manager;
-pub(crate) mod persistence;
-pub(crate) mod state;
-mod types;
+pub mod commands;
+pub mod core;
+pub mod ctcp;
+pub mod event;
+pub mod manager;
+pub mod persistence;
+pub mod state;
+pub mod types;

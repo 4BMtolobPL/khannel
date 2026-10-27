@@ -1,12 +1,12 @@
 #[derive(Debug, PartialEq)]
-pub(super) enum CtcpCommand {
+pub enum CtcpCommand {
     Version,
     Ping(String),
     Time,
     Unknown(String),
 }
 
-pub(super) fn parse_ctcp(message: &str) -> Option<CtcpCommand> {
+pub fn parse_ctcp(message: &str) -> Option<CtcpCommand> {
     if !message.starts_with('\x01') || !message.ends_with('\x01') {
         return None;
     }

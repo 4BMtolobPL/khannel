@@ -89,41 +89,28 @@ gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = 
 
 > 이 병행 가능성이 최대 안전장치. 문제 생기면 언제든 Tauri 앱으로 복귀 가능.
 
-### Phase 1 — 코어의 UiSink 추상화 (가장 중요한 단계)
+### Phase 1 — 코어의 UiSink 추상화 (완료, 2026-10-27)
 
-Tauri 의존을 코어에서 제거. **기능 변화 0, 검증 가능한 리팩터링 커밋.**
+**Phase 1 완료.** Tauri 의존을 코어에서 제거. **기능 변화 0, 검증 가능한 리팩터링 커밋.**
 
-```rust
-// kirc-core/event.rs — 모든 emit을 하나의 enum으로 통합
-#[derive(Clone, Debug)]
-pub enum UiEvent {
-    ServerAdded(ServerDetail),
-    ServerStatus  { server_id: ServerId, status: ServerStatus },
-    ChannelLockChanged { server_id: ServerId, channel: ChannelId, locked: bool },
-    SystemMessage { server_id: ServerId, message: String },
-    ChangeNickFailed { server_id: ServerId, reason: String },
-    Ui(UIEventPayload),   // 기존 emits.rs의 UIEventPayload 변형 재사용
-}
+**결과: `kirc-core`는 tauri 의존이 완전히 제거됨.** `cargo test -p kirc-core` 14개 통과.
 
-pub trait UiSink: Send + Sync + 'static {
-    fn emit(&self, event: UiEvent);
-}
-```
+달성 내역:
+- `kirc/emits.rs` 삭제 → `kirc/event.rs` 신설:
+  - `UiEvent` enum (7종 emit_* 이벤트 통합)
+  - `UiSink` trait + `EventSender = Arc<dyn UiSink>`, `Arc<T: UiSink + ?Sized>` 블랭킷 구현,
+    `tokio::sync::mpsc::UnboundedSender<UiEvent>` 기본 구현
+  - 토큰-프리(`CollectingSink`)와 채널(`ui_sink_via_channel`) 유닛 테스트 포함
+- `manager.rs`, `core.rs`의 `app_handle: AppHandle` → `ui_sink: EventSender`
+  (기존 `emit_*` 호출부 시그니처만 교체, emit은 이제 fire-and-forget, 오류는 메서드 내 로깅)
+- `commands.rs`: `#[tauri::command]` 제거 → `KircApi` facade(플레인 메서드)로 포트.
+  `manager.kirc_state()` accessor 추가.
+- 가시성: 코어 API 전반을 `pub`으로 공개 (kirc-app에서 사용하기 위한 전 단계)
 
-작업 내역:
-- `emits.rs`의 7개 `emit_*`/builder → `UiSink: emit(UiEvent)` 호출로 교체.
-  `UIEventBuilder` 패턴은 유지하되 `AppHandle` 대신 `Arc<dyn UiSink>`를 받도록 수정.
-- `ServerActor`, `KircManager`는 `AppHandle` 소유 대신 `Arc<dyn UiSink>` 소유.
-- Tauri 쪽 어댑터(state.rs 내)를 따로 두어 `AppHandle → UiSink` 구현체 주입
-  (기존 Tauri 빌드는 어댑터로 유지).
-- `kirc-core`의 **Tauri-프리** 유닛 테스트: std mpsc 기반 UiSink로 emit 검증 (부수 이득).
-
-결과: `kirc-core`에 `tauri` 의존이 사라짐. 커맨드/이벤트 유형은 기존 payload 그대로.
+참고: 계획서 상의 "Tauri 어댑터"는 불필요해졌다. 기존 Tauri 앱(src-tauri)은
+이제 코어의 **복사본**을 계속 소유하며(`src-tauri/src`) kirc-core를 참조하지 않기 때문이다.
 
 ### Phase 2 — GPUI 코어 뼈대 + 경로/로깅/런처
-
-### Phase 2 — GPUI 코어 뼈대 + tokio 브리지
-
 ```rust
 // crates/kirc-app/main.rs
 fn main() {

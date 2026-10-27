@@ -8,25 +8,25 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-pub(crate) struct KircState {
+pub struct KircState {
     servers: Mutex<HashMap<ServerId, Arc<ServerState>>>,
     persistence_path: Option<PathBuf>,
 }
 
 impl KircState {
-    pub(crate) fn set_persistence_path(&mut self, path: &std::path::Path) {
+    pub fn set_persistence_path(&mut self, path: &std::path::Path) {
         self.persistence_path = Some(path.to_path_buf());
     }
 
-    pub(in crate::kirc) fn get_server(&self, server_id: ServerId) -> Option<Arc<ServerState>> {
+    pub fn get_server(&self, server_id: ServerId) -> Option<Arc<ServerState>> {
         self.servers.lock().unwrap().get(&server_id).cloned()
     }
 
-    pub(in crate::kirc) fn get_all_servers(&self) -> HashMap<ServerId, Arc<ServerState>> {
+    pub fn get_all_servers(&self) -> HashMap<ServerId, Arc<ServerState>> {
         self.servers.lock().unwrap().clone()
     }
 
-    pub(in crate::kirc) fn add_server(&self, config: ServerConfig) -> anyhow::Result<ServerId> {
+    pub fn add_server(&self, config: ServerConfig) -> anyhow::Result<ServerId> {
         let server_id = Uuid::now_v7();
 
         self.servers.lock().unwrap().insert(
@@ -39,7 +39,7 @@ impl KircState {
         Ok(server_id)
     }
 
-    pub(in crate::kirc) fn drain_runtimes(&self) -> Vec<ServerRuntime> {
+    pub fn drain_runtimes(&self) -> Vec<ServerRuntime> {
         let mut guard = self.servers.lock().unwrap();
         guard
             .drain()
@@ -47,13 +47,13 @@ impl KircState {
             .collect()
     }
 
-    pub(in crate::kirc) fn is_channel_locked(&self, server_id: ServerId, channel: &str) -> bool {
+    pub fn is_channel_locked(&self, server_id: ServerId, channel: &str) -> bool {
         self.get_server(server_id)
             .map(|s| s.is_channel_locked(channel))
             .unwrap_or(false)
     }
 
-    pub(in crate::kirc) fn save_snapshot(&self) -> anyhow::Result<()> {
+    pub fn save_snapshot(&self) -> anyhow::Result<()> {
         if let Some(path) = &self.persistence_path {
             let snapshot = self.snapshot();
             crate::fs::save(path, snapshot)

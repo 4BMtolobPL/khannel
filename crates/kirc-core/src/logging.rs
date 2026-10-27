@@ -4,7 +4,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(debug_assertions)]
-pub(super) fn init_logging() {
+pub fn init_logging() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // 콘솔 로그
@@ -25,7 +25,7 @@ pub(super) fn init_logging() {
 }
 
 #[cfg(not(debug_assertions))]
-pub(super) fn init_logging() {
+pub fn init_logging() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // 파일 로그

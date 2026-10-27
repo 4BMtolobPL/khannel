@@ -1,5 +1,5 @@
 use crate::kirc::ctcp::{parse_ctcp, CtcpCommand};
-use crate::kirc::emits::{
+use crate::kirc::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
 };
 use crate::kirc::state::server::ServerState;
@@ -9,33 +9,33 @@ use irc::client::prelude::*;
 use irc::client::ClientStream;
 use irc::error;
 use std::sync::Arc;
-use tauri::AppHandle;
+use crate::kirc::event::EventSender;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 /// IRC 서버 하나당 하나의 Actor. 연결 생명주기와 메시지 처리를 소유한다.
-pub(in crate::kirc) struct ServerActor {
+pub struct ServerActor {
     server_id: ServerId,
     server: Arc<ServerState>,
-    app_handle: AppHandle,
+    ui_sink: EventSender,
 }
 
 impl ServerActor {
-    pub(in crate::kirc) fn new(
+    pub fn new(
         server_id: ServerId,
         server: Arc<ServerState>,
-        app_handle: AppHandle,
+        ui_sink: EventSender,
     ) -> Self {
         Self {
             server_id,
             server,
-            app_handle,
+            ui_sink,
         }
     }
 
     /// 액터의 진입점. KircManager가 `tokio::spawn(actor.run())`으로 실행한다.
     #[instrument(name = "server_actor", skip_all, fields(server_id = %self.server_id))]
-    pub(in crate::kirc) async fn run(self) {
+    pub async fn run(self) {
         debug!(server_id = %self.server_id, "Starting server actor");
 
         // 1. 연결 수립. 에러는 fail 로 소비
@@ -50,7 +50,7 @@ impl ServerActor {
         // 2. 커맨드 채널은 연결 성공 이후에 생성
         let (tx, rx) = unbounded_channel::<ServerCommand>();
         self.server.transition_to_registering(tx);
-        let _ = emit_server_status(&self.app_handle, self.server_id, ServerStatus::Registering);
+        let _ = emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Registering);
 
         // 3. 메인 세션: IRC 스트림과 커맨드 채널을 select 로 소비
         trace!(server_id = %self.server_id, "Start server actor loop");
@@ -58,7 +58,7 @@ impl ServerActor {
 
         // 4. 세션 종료(정상 종료/연결 단절 공통). 추후 재연결 구현 시 Closed 분기가 재시도 진입점이 된다.
         self.server.transition_to_disconnected();
-        let _ = emit_server_status(&self.app_handle, self.server_id, ServerStatus::Disconnected);
+        let _ = emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
 
         debug!(server_id = %self.server_id, reason = ?outcome, "Server actor session ended");
     }
@@ -110,7 +110,7 @@ impl ServerActor {
                             debug!(event = "irc_stream_error", error = "NoUsableNick", "IRC stream error, No usable nick");
 
                             // 닉네임 변경은 alt_nick 없이 실패시 emit 후 바로 continue
-                            let _ = emit_change_nick_failed(&self.app_handle, self.server_id, "Can't change nickname");
+                            let _ = emit_change_nick_failed(&self.ui_sink, self.server_id, "Can't change nickname");
 
                             continue
                         }
@@ -217,25 +217,25 @@ impl ServerActor {
                     info!(target = %target, content = %content, "Received CTCP message");
                     handle_ctcp(client, &source_nickname, ctcp);
                 } else {
-                    emit_ui_event(&self.app_handle)
+                    emit_ui_event(&self.ui_sink)
                         .user_message(self.server_id, target, source_nickname, content)
-                        .emit()?;
+                        .emit();
                 }
             }
             Command::JOIN(chanlist, _chankey, _real_name) => {
-                emit_ui_event(&self.app_handle)
+                emit_ui_event(&self.ui_sink)
                     .join(self.server_id, chanlist, source_nickname)
-                    .emit()?;
+                    .emit();
             }
             Command::PART(chanlist, comment) => {
-                emit_ui_event(&self.app_handle)
+                emit_ui_event(&self.ui_sink)
                     .part(self.server_id, chanlist, source_nickname, comment)
-                    .emit()?;
+                    .emit();
             }
             Command::QUIT(comment) => {
-                emit_ui_event(&self.app_handle)
+                emit_ui_event(&self.ui_sink)
                     .quit(self.server_id, source_nickname, comment)
-                    .emit()?;
+                    .emit();
             }
             Command::NICK(nickname) => {
                 // 1. 자기 자신인지 확인
@@ -252,20 +252,20 @@ impl ServerActor {
                 }*/
 
                 // 3. 프론트로 이벤트 emit
-                emit_ui_event(&self.app_handle)
+                emit_ui_event(&self.ui_sink)
                     .nick(self.server_id, source_nickname, nickname)
-                    .emit()?;
+                    .emit();
             }
             Command::TOPIC(channel, topic) => {
-                emit_ui_event(&self.app_handle)
+                emit_ui_event(&self.ui_sink)
                     .topic(self.server_id, channel, topic)
-                    .emit()?;
+                    .emit();
             }
             Command::ERROR(message) => {
                 warn!(message = %message, "Server command error");
-                emit_ui_event(&self.app_handle)
+                emit_ui_event(&self.ui_sink)
                     .error(self.server_id, message)
-                    .emit()?;
+                    .emit();
             }
             Command::Response(Response::RPL_WELCOME, _) => {
                 self.server.transition_to_connected();
@@ -276,10 +276,10 @@ impl ServerActor {
                         .send_command(ServerCommand::Join(channel_name))?;
                 }
 
-                emit_server_status(&self.app_handle, self.server_id, ServerStatus::Connected)?;
+                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Connected);
 
                 // Optional: Alert system message
-                emit_system_message(&self.app_handle, self.server_id, "서버에 연결되었습니다.")?;
+                emit_system_message(&self.ui_sink, self.server_id, "서버에 연결되었습니다.");
             }
             Command::Response(Response::ERR_NICKNAMEINUSE, _) => {
                 // 닉네임이 중복된 경우
@@ -301,7 +301,7 @@ impl ServerActor {
         error!(server_id = %self.server_id, message = %message, "Server actor failed");
 
         self.server.transition_to_failed(message);
-        let _ = emit_server_status(&self.app_handle, self.server_id, ServerStatus::Failed);
+        let _ = emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Failed);
     }
 }
 

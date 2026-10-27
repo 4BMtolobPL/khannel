@@ -2,7 +2,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum MyCustomError {
+pub enum MyCustomError {
     /*#[error("IRC server error: {0}")]
     IRCServer(String),*/
     #[error(transparent)]

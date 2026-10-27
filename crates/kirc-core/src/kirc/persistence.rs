@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct ServerStateSnapshot {
+pub struct ServerStateSnapshot {
     config: ServerConfig,
     channels: HashMap<ChannelId, ChannelState>,
 }
 
 impl ServerStateSnapshot {
-    pub(super) fn new(config: ServerConfig, channels: HashMap<ChannelId, ChannelState>) -> Self {
+    pub fn new(config: ServerConfig, channels: HashMap<ChannelId, ChannelState>) -> Self {
         Self { config, channels }
     }
 }
@@ -26,7 +26,7 @@ impl Memento<ServerState> for ServerStateSnapshot {
 }
 
 #[derive(Serialize, Deserialize, Default)]
-pub(crate) struct KircStateSnapshot {
+pub struct KircStateSnapshot {
     servers: Vec<ServerStateSnapshot>,
 }
 
