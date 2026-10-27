@@ -191,7 +191,9 @@ impl IrcModel {
     }
 
     fn on_channel_lock_changed(&mut self, p: ChannelLockChangedEvent) {
-        self.update_channel_lock(&p.channel, p.locked);
+        // 코어 이벤트는 채널명을 담으므로 복합 ID(`serverId:channel`)로 조합해 갱신
+        let channel_id = self.get_channel_id(&p.server_id, &p.channel);
+        self.update_channel_lock(&channel_id, p.locked);
     }
 
     fn on_system_message(&mut self, p: SystemMessagePayload) {
@@ -645,7 +647,9 @@ impl IrcModel {
         let Some(server_id) = self.current_server_id else {
             return;
         };
-        let Some(channel_name) = self.current_channel_id.clone() else {
+        // 코어의 채널 맵은 채널명 키 기준이므로 본문 채널명으로 전달해야 한다.
+        // (복합 ID를 전달하면 set_channel_locked가 no-op이 된다 — Phase 4 정규화)
+        let Some(channel_name) = self.current_channel().map(|c| c.name.clone()) else {
             return;
         };
 

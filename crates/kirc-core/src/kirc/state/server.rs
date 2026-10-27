@@ -245,3 +245,35 @@ impl Originator<ServerStateSnapshot> for ServerState {
         ServerStateSnapshot::new(self.config(), self.channels())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_server() -> ServerState {
+        ServerState::new(
+            ServerRuntime::Disconnected,
+            ServerConfig::new("irc.test".to_string(), 6667, false, "nick".to_string()),
+        )
+    }
+
+    #[test]
+    fn channel_lock_round_trip() {
+        let server = test_server();
+
+        // 본문 채널명 키 기준으로 들어가고(복합 ID 아님), lock 토글이 반영된다.
+        server.insert_channel("#test", false);
+        assert!(!server.is_channel_locked("#test"));
+
+        server.set_channel_locked("#test", true);
+        assert!(server.is_channel_locked("#test"));
+
+        server.set_channel_locked("#test", false);
+        assert!(!server.is_channel_locked("#test"));
+
+        // 없는 채널 키에 대한 조회/설정은 no-op(false)
+        assert!(!server.is_channel_locked("#missing"));
+        server.set_channel_locked("#missing", true);
+        assert!(!server.is_channel_locked("#missing"));
+    }
+}
