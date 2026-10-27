@@ -101,9 +101,13 @@ impl InputBar {
         theme: Theme,
     ) -> gpui::Stateful<gpui::Div> {
         // Svelte: text-sm px-2 py-1 rounded hover:bg-neutral-200/700
+        // 이모지 아이콘이 정중앙에 오도록 flex 가운데 정렬
         div()
             .id(id)
             .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
             .rounded(px(4.))
             .px(px(8.))
             .py(px(4.))

@@ -8,9 +8,12 @@ edition = "2021"
 gpui = { git = "https://github.com/zed-industries/zed.git" }
 # 앱 부트스트랩(Platform 제공)은 gpui_platform 크레이트가 담당.
 # 대상 OS(Linux X11/Wayland + macOS)에 맞춰 linux 백엔드 feature를 켠다.
+# font-kit: macOS에서 텍스트가 아예 렌더되지 않는 문제의 수정 서페이스
+# (font-kit은 gpui_macos에만 노출되므로 linux 빌드에는 영향 없음).
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = [
     "wayland",
     "x11",
+    "font-kit",
 ] }
 kirc-core = { path = "../kirc-core" }
 serde = { workspace = true }

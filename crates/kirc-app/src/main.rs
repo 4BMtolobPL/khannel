@@ -93,6 +93,9 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // 반투명 팔레트(One Light/Dark alpha)가 비치려면 네이티브 배경을
+                // 투명으로 둬야 한다 (macOS 필수 — 불투명 뒷배경으로 가림).
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| ChatApp::show(api.clone(), rx, window, cx)),
