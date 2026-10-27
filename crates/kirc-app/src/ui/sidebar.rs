@@ -95,6 +95,7 @@ impl Render for Sidebar {
         div()
             .w(px(224.)) // Svelte w-56
             .flex_shrink_0()
+            .flex()
             .flex_col()
             .bg(theme.bg_side)
             .border_r_1()
@@ -108,6 +109,7 @@ impl Render for Sidebar {
             )
             .child(
                 div()
+                    .flex()
                     .flex_col()
                     .gap_y(px(4.)) // space-y-1
                     .px(px(8.))
@@ -123,6 +125,7 @@ impl Render for Sidebar {
                         let mut row = div()
                             .id(server_id.to_string())
                             .w_full()
+                            .flex()
                             .flex_col()
                             .rounded(px(4.))
                             .when(is_selected, |d| d.bg(theme.selected))
@@ -233,6 +236,7 @@ impl Sidebar {
         let model = self.model.clone();
 
         let list = div()
+            .flex()
             .flex_col()
             .gap_y(px(4.))
             .ml(px(16.))

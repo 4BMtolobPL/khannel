@@ -146,6 +146,7 @@ impl Render for ChangeNickModal {
             )
             .child(
                 div()
+                    .flex()
                     .flex_col()
                     .gap_y(px(12.))
                     .child(

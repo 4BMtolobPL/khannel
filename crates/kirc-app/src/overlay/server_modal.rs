@@ -160,6 +160,7 @@ impl Render for ServerModal {
             ))
             .child(
                 div()
+                    .flex()
                     .flex_col()
                     .gap_y(px(16.)) // space-y-4
                     // Host

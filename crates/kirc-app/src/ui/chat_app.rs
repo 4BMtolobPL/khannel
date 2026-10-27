@@ -416,6 +416,7 @@ impl Render for ChatApp {
             // ── 우측 메인 ──
             .child(
                 div()
+                    .flex()
                     .flex_1()
                     .min_w_0()
                     .flex_col()

@@ -115,6 +115,7 @@ impl Render for ChannelJoinModal {
             )
             .child(
                 div()
+                    .flex()
                     .flex_col()
                     .gap_y(px(12.)) // space-y-3
                     .child(
