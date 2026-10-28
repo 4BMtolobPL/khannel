@@ -7,7 +7,8 @@
 
 use gpui::{
     div, prelude::*, px, ClickEvent, Context, Decorations, Entity, FontWeight, IntoElement,
-    MouseButton, ParentElement, Pixels, Point, Render, Styled, Window,
+    MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render, Styled, Window,
+    WindowControlArea,
 };
 use kirc_core::kirc::types::ServerId;
 
@@ -25,11 +26,28 @@ use crate::ui::message_view::MessageView;
 use crate::ui::sidebar::{Sidebar, SidebarEvent};
 use crate::ui::window_frame::window_frame;
 
+// ── 창 컨트롤 줄 기하 (zeron shell.rs / theme.rs 수치) ──
 /// 창 맨 위의 컨트롤 줄 높이 — 신호등/사이드바 토글/닫기 버튼이 놓이는 높이이자 사이드바·메인
-/// 영역의 위쪽 여백 (zed `platform_title_bar_height`와 같은 34px). 별도의 바는 그리지 않는다.
-const TOP_INSET: Pixels = px(34.);
-/// macOS 신호등 버튼이 차지하는 왼쪽 여백 (zed `TRAFFIC_LIGHT_PADDING` — macOS 26 기준 78px)
-const TRAFFIC_LIGHT_PADDING: Pixels = px(78.);
+/// 영역의 위쪽 여백 (zeron `Theme::TITLEBAR_HEIGHT`). 별도의 바는 그리지 않는다.
+pub const TOP_INSET: Pixels = px(38.);
+/// 컨트롤을 줄 중앙보다 아래로 내리는 위쪽 패딩 (zeron `TITLEBAR_TOP_PAD`).
+/// (38 + 4) / 2 = 21 → macOS 신호등(위치 y=14, 높이 14) 중심과 일치한다.
+const TOP_PAD: Pixels = px(4.);
+/// 컨트롤 묶음의 좌우 패딩 (zeron `TITLEBAR_CLUSTER_PAD`)
+const CLUSTER_PAD: Pixels = px(10.);
+/// macOS에서 컨트롤 묶음이 시작하는 x (zeron `titlebar_cluster_start`: 신호등 오른쪽 88px,
+/// 전체 화면이면 신호등이 숨어 12px)
+const MAC_CLUSTER_START: f32 = 88.;
+const MAC_CLUSTER_START_FULLSCREEN: f32 = 12.;
+/// macOS 신호등 버튼의 x 위치 (main.rs `traffic_light_position`과 같은 값)
+const MAC_TRAFFIC_LIGHT_X: f32 = 14.;
+/// 창 컨트롤 버튼 크기 / 모서리 (zeron `window_control_button`: 24px, r6)
+const CONTROL_SIZE: Pixels = px(24.);
+const CONTROL_RADIUS: Pixels = px(6.);
+/// island(버튼 묶음 배경) 높이 / 모서리 / 왼쪽 시작 (zeron `titlebar_island_vertical_geometry`)
+const ISLAND_HEIGHT: f32 = 32.;
+const ISLAND_RADIUS: Pixels = px(12.);
+const ISLAND_LEFT: Pixels = px(6.);
 
 // ==================================== 컨텍스트 메뉴 state ====================================
 
@@ -386,11 +404,13 @@ impl ChatApp {
     }
 
     /// 창 이동 영역: 누른 채 움직이면 창 이동, 더블클릭이면 확대/축소.
-    /// 사이드바·메인 영역의 위쪽 여백에 쓰인다 (시스템 타이틀바 대체).
+    /// 사이드바·메인 영역의 위쪽 여백에 쓰인다 (시스템 타이틀바 대체, zeron `titlebar_drag_region`).
     fn drag_region(&self, id: &'static str, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let is_macos = cfg!(target_os = "macos");
         div()
             .id(id)
+            // macOS: app-owned titlebar의 드래그 영역으로 표시 (WindowOptions.app_owns_titlebar_drag)
+            .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.title_drag_pending = true),
@@ -400,8 +420,11 @@ impl ChatApp {
                 cx.listener(|this, _, _, _| this.title_drag_pending = false),
             )
             .on_mouse_down_out(cx.listener(|this, _, _, _| this.title_drag_pending = false))
-            .on_mouse_move(cx.listener(|this, _, window, _| {
-                if this.title_drag_pending {
+            // 버튼이 실제로 눌린 채 움직일 때만 창 이동을 시작한다. macOS의 네이티브 드래그 세션은
+            // 그 안의 빠른 두 번째 클릭을 제목 막대 더블클릭(확대)으로 처리하므로, 남아 있던
+            // pending 상태만으로 hover 이동 중에 세션을 열면 안 된다 (zeron 주석 참고).
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
+                if this.title_drag_pending && event.pressed_button == Some(MouseButton::Left) {
                     this.title_drag_pending = false;
                     window.start_window_move();
                 }
@@ -418,72 +441,154 @@ impl ChatApp {
             })
     }
 
-    /// 창 왼쪽 위에 고정된 컨트롤: (macOS 신호등 자리) + 사이드바 토글.
-    /// 사이드바를 열고 닫아도 같은 자리에 머문다 — 열리면 그 아래로 서버/채널 목록이 보인다.
+    /// 창 왼쪽 위에 고정된 컨트롤 묶음(island): [macOS 신호등] + 사이드바 토글.
+    ///
+    /// zeron `render_titlebar_cluster`: 창 왼쪽 위에 얹힌 오버레이라 사이드바를 열고 닫아도 같은
+    /// 자리에 머문다. 컨테이너 자체는 리스너가 없어 버튼 사이 빈 곳은 아래 창 이동 영역으로
+    /// 통과하고, 버튼은 `occlude`로 아래로 이벤트를 넘기지 않는다. island 배경은 x=6부터
+    /// 컨트롤 끝까지 걸쳐 macOS 신호등까지 하나의 묶음으로 감싼다.
     fn render_corner_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let theme = Theme::current(cx);
-        let left = if cfg!(target_os = "macos") && !window.is_fullscreen() {
-            TRAFFIC_LIGHT_PADDING
+        let cluster_start = if !cfg!(target_os = "macos") {
+            0.
+        } else if window.is_fullscreen() {
+            MAC_CLUSTER_START_FULLSCREEN
         } else {
-            px(8.)
+            MAC_CLUSTER_START
         };
+        // 컨테이너 자체 패딩을 뺀 만큼 신호등 자리를 비운다 (zeron `titlebar_spacer_width`)
+        let spacer = (cluster_start - f32::from(CLUSTER_PAD)).max(0.);
+        // island를 패딩 포함 줄의 중심(= 신호등 중심)에 맞춘다
+        let island_top = (f32::from(TOP_INSET) + f32::from(TOP_PAD)) / 2. - ISLAND_HEIGHT / 2.;
+        // island 좌우 여백을 같게: 왼쪽 여백(island 시작 → 첫 항목)만큼 마지막 버튼 오른쪽에도 둔다.
+        // 첫 항목은 macOS(창 모드)면 신호등, 아니면 토글 버튼(컨테이너 패딩 위치).
+        let first_item_x = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+            MAC_TRAFFIC_LIGHT_X
+        } else {
+            f32::from(CLUSTER_PAD).max(cluster_start)
+        };
+        let side_gap = first_item_x - f32::from(ISLAND_LEFT);
+        // island 오른쪽 끝 = 컨테이너 오른쪽 끝(마지막 버튼 + 패딩)에서 (패딩 - 여백)만큼 안쪽
+        let island_right = f32::from(CLUSTER_PAD) - side_gap;
 
         div()
             .absolute()
             .top_0()
             .left_0()
             .h(TOP_INSET)
-            .pl(left)
+            .pt(TOP_PAD)
+            .px(CLUSTER_PAD)
             .flex()
             .items_center()
+            // island 배경 (버튼 뒤)
             .child(
-                window_button("toggle-sidebar", "☰", theme)
-                    .hover(|h| h.bg(theme.hover).text_color(theme.text_main))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_sidebar(cx))),
+                div()
+                    .absolute()
+                    .left(ISLAND_LEFT)
+                    .right(px(island_right))
+                    .top(px(island_top))
+                    .h(px(ISLAND_HEIGHT))
+                    .rounded(ISLAND_RADIUS)
+                    .bg(theme.island_bg())
+                    .border_1()
+                    .border_color(theme.border_subtle)
+                    .shadow_sm(),
+            )
+            .when(spacer > 0., |d| {
+                d.child(div().flex_none().h_full().w(px(spacer)))
+            })
+            .child(
+                window_control_button("toggle-sidebar", hamburger_icon(theme), theme)
+                    .hover(|h| h.bg(theme.row_hover()))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_sidebar(cx)
+                    })),
             )
     }
 
-    /// 메인 영역 위쪽 여백: 창 이동 영역 + (Linux CSD일 때) 오른쪽 위 닫기 버튼.
-    fn render_main_top(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::current(cx);
-        // Linux에서 컴포지터가 CSD를 받아들였을 때만 닫기 버튼을 그린다
-        // (서버 측 장식이면 시스템 타이틀바에 이미 닫기 버튼이 있다).
+    /// Linux CSD일 때 창 오른쪽 위의 닫기 버튼 (zeron `render_linux_caption_controls`).
+    /// 서버 측 장식이면 시스템 타이틀바에 이미 닫기 버튼이 있으므로 그리지 않는다.
+    fn render_close_control(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let show_close = !cfg!(target_os = "macos")
             && matches!(window.window_decorations(), Decorations::Client { .. });
-
-        div()
-            .flex_shrink_0()
-            .h(TOP_INSET)
-            .w_full()
-            .flex()
-            .items_center()
-            .pr(px(8.))
-            .child(self.drag_region("main-drag", cx).flex_1().h_full())
-            .when(show_close, |d| {
-                d.child(
-                    window_button("window-close", "✕", theme)
+        if !show_close {
+            return None;
+        }
+        let theme = Theme::current(cx);
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .h(TOP_INSET)
+                .pt(TOP_PAD)
+                .px(CLUSTER_PAD)
+                .flex()
+                .items_center()
+                .child(
+                    window_control_button("window-close", "✕", theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .hover(|h| h.bg(theme.danger_hover_bg).text_color(theme.danger_text))
+                        // zeron linux_caption_button: 닫기는 빨간 배경 + 흰 글자
+                        .hover(|h| h.bg(gpui::rgb(0xe81123)).text_color(gpui::white()))
                         // Linux는 마지막 창을 닫으면 앱이 종료된다(on_app_quit → graceful shutdown)
-                        .on_click(|_, window, _| window.remove_window()),
-                )
-            })
+                        .on_click(|_, window, cx| {
+                            cx.stop_propagation();
+                            window.remove_window()
+                        }),
+                ),
+        )
     }
 }
 
-/// 창 컨트롤 버튼 공통 모양 (사이드바 토글, 닫기)
-fn window_button(id: &'static str, label: &'static str, theme: Theme) -> gpui::Stateful<gpui::Div> {
+/// 창 컨트롤 버튼 공통 모양 (사이드바 토글, 닫기) — zeron `window_control_button`.
+///
+/// 창 이동 영역 위에 놓이므로 아래로 마우스 이벤트가 전혀 넘어가지 않아야 한다.
+/// `occlude`로 hit test를 버튼에서 멈춰, 아래 영역의 드래그 시작·더블클릭 확대(is_hovered 기반)가
+/// 버튼 위에서는 발화하지 않게 한다. (이전: 토글을 빠르게 두 번 누르면 창이 최대화됐다)
+fn window_control_button(
+    id: &'static str,
+    glyph: impl IntoElement,
+    theme: Theme,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .group(id)
+        .size(CONTROL_SIZE)
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .w(px(28.))
-        .h(px(24.))
-        .rounded(px(4.))
+        .rounded(CONTROL_RADIUS)
         .cursor_pointer()
         .text_color(theme.text_subtle)
-        .child(label)
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .child(glyph)
+}
+
+/// 사이드바 토글 아이콘(☰)을 막대 3개로 직접 그린다.
+///
+/// `☰` 글자는 macOS에서 대체 폰트로 그려지는데, 그 폰트의 글자 높이 정보 때문에 버튼 상자를
+/// 가운데 정렬해도 그림이 좌하단으로 쏠렸다. div로 그리면 폰트와 무관하게 정확히 가운데에 온다.
+/// 버튼 hover 시 막대 색은 group hover로 바꾼다(div 배경은 글자색을 상속하지 않는다).
+fn hamburger_icon(theme: Theme) -> gpui::Div {
+    let bar = || {
+        div()
+            .w_full()
+            .h(px(1.5))
+            .rounded_full()
+            .bg(theme.text_subtle)
+            .group_hover("toggle-sidebar", |s| s.bg(theme.text_main))
+    };
+    div()
+        .w(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .child(bar())
+        .child(bar())
+        .child(bar())
 }
 
 impl Render for ChatApp {
@@ -506,8 +611,8 @@ impl Render for ChatApp {
         let server_menu = self.server_menu;
         let channel_menu = self.channel_menu.clone();
 
-        let main_top = self.render_main_top(window, cx);
         let corner_controls = self.render_corner_controls(window, cx);
+        let close_control = self.render_close_control(window, cx);
 
         let content = div()
             .relative()
@@ -515,37 +620,43 @@ impl Render for ChatApp {
             .flex()
             .bg(theme.bg_main)
             .text_color(theme.text_main)
-            // ── 좌측 사이드바 (토글): 위쪽 여백(창 이동 영역, 토글 버튼 자리) + 서버/채널 목록 ──
+            // ── 좌측 사이드바 (토글): 창 전체 높이의 톤 + 오른쪽 hairline (zeron sidebar tone).
+            //    위쪽 여백(창 이동 영역, 컨트롤 자리) 아래로 서버/채널 목록 ──
             .when(self.sidebar_open, |d| {
                 d.child(
                     div()
                         .flex_shrink_0()
                         .flex()
                         .flex_col()
+                        .bg(theme.sidebar_tone())
+                        .border_r_1()
+                        .border_color(theme.border)
                         .child(
                             self.drag_region("sidebar-drag", cx)
                                 .flex_shrink_0()
-                                .h(TOP_INSET)
-                                .bg(theme.bg_side)
-                                .border_r_1()
-                                .border_color(theme.border),
+                                .h(TOP_INSET),
                         )
                         .child(self.sidebar.clone()),
                 )
             })
-            // ── 우측 메인: 위쪽 여백(창 이동 영역 + Linux 닫기 버튼) + 메시지 + 입력 ──
+            // ── 우측 메인: 위쪽 여백(창 이동 영역) + 메시지 + 입력 ──
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .flex_col()
-                    .child(main_top)
+                    .child(
+                        self.drag_region("main-drag", cx)
+                            .flex_shrink_0()
+                            .h(TOP_INSET),
+                    )
                     .child(self.message_view.clone())
                     .child(self.input_bar.clone()),
             )
-            // ── 왼쪽 위 고정 컨트롤 (사이드바 토글) — 사이드바/메인 위에 얹는다 ──
+            // ── 창 컨트롤 (사이드바/메인 위에 얹는 오버레이) ──
             .child(corner_controls)
+            .children(close_control)
             // ── 모달 ──
             .when(self.show_channel_modal, |d| {
                 d.child(self.channel_modal.clone())

@@ -517,7 +517,7 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   - 키 바인딩·전역 Dismiss 리스너는 `ChatApp::show`에서 `main.rs`로 옮겨 앱 전체 1회 등록
     (창을 다시 열 때마다 중복 등록되지 않게).
   - 단축키 OS별 분리 (사용자 요청, `#[cfg]`): macOS는 `cmd-q`/`cmd-a,c,v,x`/`cmd-←,→`(줄 처음/끝)/
-    `ctrl-cmd-space`(문자 뷰어), 그 외는 `ctrl-q`/`ctrl-a,c,v,x`. 방향키·Home/End·Backspace/
+    `ctrl-cmd-space`(문자 뷰어), 그 외는 `ctrl-q`(→ 이후 제거)/`ctrl-a,c,v,x`. 방향키·Home/End·Backspace/
     Delete·Esc는 공통. 함께 수정: `ShowCharacterPalette`는 바인딩만 있고 TextInput 처리기가 없어
     동작하지 않았다 → 처리기 추가.
   - **창 상단에 별도의 바를 두지 않는다 (사용자 결정, zeron 참고)**:
@@ -533,6 +533,30 @@ Tauri 버전과 나란히 실행해 다음을 검증:
     Wayland `app_id`를 `com.kimtalmo.kirc-rs`로 지정(컴포지터 창 규칙용).
   - 사이드바 토글 상태는 저장하지 않는다(사용자 결정).
   - 검증: 빌드/clippy/테스트(리사이즈 경계 판정 3건) 통과. GUI 동작 macOS/niri 수동 확인 완료.
+- **창 컨트롤 island + 사이드바를 zeron 스타일로 (2026-10-28, 사용자 요청)** — 상세와 보류 항목은
+  [ZERON_UI.md](ZERON_UI.md):
+  - 컨트롤 줄 38px + 위쪽 패딩 4(신호등 위치 (14,14)), macOS 묶음 시작 x=88, 버튼 24px r6.
+    왼쪽 위 컨트롤을 **island**(x=6부터 묶음 끝까지, 높이 32, r12, 떠 있는 표면 + 그림자)로 묶어
+    macOS 신호등까지 감싼다. `app_owns_titlebar_drag: true`.
+  - 사이드바: 창 전체 높이의 wash 5% 톤 + 오른쪽 hairline, "Servers" 섹션 헤더(28px) + `+`(서버 추가),
+    29px 행(r8), 선택 wash(다크 11%/라이트 6%), 비선택 글자 80%. 선택 표시는 한 행만(서버 버퍼면
+    서버 행, 채널이면 채널 행) — Phase 3 nit "서버 선택 배경이 채널 목록까지 덮음"도 함께 해소.
+    테마에 `Theme::wash` 규칙 추가, 대체된 `bg_side`/`selected`/`selected_channel` 제거.
+  - **버그 수정**: 사이드바 토글을 빠르게 두 번 누르면 아래 창 이동 영역의 더블클릭(최대화)이 발화했다.
+    버튼에 `occlude` + mouse down `prevent_default` + click `stop_propagation`(zeron
+    `window_control_button`)으로 아래로 이벤트가 넘어가지 않게 했고, 창 이동은 버튼이 눌린 채
+    움직일 때만 시작한다(`pressed_button` 확인 — macOS 네이티브 드래그 세션의 더블클릭 확대 방지).
+  - **Linux 종료 단축키 제거 (사용자 결정)**: `ctrl-q` 바인딩 삭제 — 창 닫기는 컴포지터 단축키나
+    닫기 버튼으로. macOS `cmd-q`는 유지.
+  - 사용자 확인 후 보정: ① macOS에서 `☰` 글자가 대체 폰트 metrics 때문에 좌하단으로 쏠려 → 막대
+    3개를 div로 그린 아이콘으로 교체(모양 동일, hover는 group hover). ② island 오른쪽 여백이 왼쪽보다
+    넓었다(x=6 시작 + 컨테이너 패딩 10 그대로) → 첫 항목(macOS 신호등 x=14, 그 외 토글)까지의 왼쪽
+    여백과 같아지도록 오른쪽 끝을 계산(Linux 4px로 상하좌우 동일, macOS 8px).
+  - **단어 단위 편집 추가 (사용자 요청)**: 이동/선택/삭제 — Linux `ctrl-←/→`, `ctrl-shift-←/→`,
+    `ctrl-backspace`/`ctrl-delete`, macOS는 같은 동작을 `alt(option)` 조합으로. 경계는 UAX #29
+    (한글 음절 묶음 = 한 단어, `/` `,` 등은 정지, 글자 사이 `.`은 이어짐 → `irc.libera.chat`은 한 단어).
+    이전엔 gpui 예제 기반 TextInput에 단어 이동 자체가 없어 ctrl-←/→가 동작하지 않았다. 테스트 2건.
+  - 검증: 빌드/clippy/fmt/테스트 통과. GUI 동작 macOS/niri 수동 확인 완료.
 - 제거: `src/`, `src-tauri/`, `svelte.config.js`, `vite.config.js`, `tsconfig.json`,
   `deno.lock`, `package.json` (svelte 관련 도구들), README/CI 정합성 수정.
   - **완료 (2026-10-28)**: 위 파일 + `static/`, `.oxfmtrc.json` 삭제. workspace members에서

@@ -23,6 +23,13 @@ actions!(
         SelectAll,
         Home,
         End,
+        // 단어 단위 이동/선택/삭제 (Linux ctrl / macOS option 조합)
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordLeft,
+        DeleteWordRight,
         ShowCharacterPalette,
         Paste,
         Cut,

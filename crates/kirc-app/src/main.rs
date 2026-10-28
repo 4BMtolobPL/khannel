@@ -23,8 +23,9 @@ use kirc_core::logging;
 use kirc_core::memento::Memento;
 
 use crate::action::{
-    Backspace, Copy, Cut, Delete, Dismiss, End, Home, Left, Paste, Quit, Right, SelectAll,
-    SelectLeft, SelectRight,
+    Backspace, Copy, Cut, Delete, DeleteWordLeft, DeleteWordRight, Dismiss, End, Home, Left, Paste,
+    Quit, Right, SelectAll, SelectLeft, SelectRight, SelectWordLeft, SelectWordRight, WordLeft,
+    WordRight,
 };
 use crate::api::{build_kirc, setup, UiApi};
 use crate::model::IrcModel;
@@ -157,16 +158,31 @@ fn bind_keys(cx: &mut App) {
         // macOS 관례: cmd-←/→ = 줄 처음/끝
         KeyBinding::new("cmd-left", Home, None),
         KeyBinding::new("cmd-right", End, None),
+        // macOS 관례: option(alt) = 단어 단위 이동/선택/삭제
+        KeyBinding::new("alt-left", WordLeft, None),
+        KeyBinding::new("alt-right", WordRight, None),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, None),
+        KeyBinding::new("alt-shift-right", SelectWordRight, None),
+        KeyBinding::new("alt-backspace", DeleteWordLeft, None),
+        KeyBinding::new("alt-delete", DeleteWordRight, None),
         KeyBinding::new("ctrl-cmd-space", crate::action::ShowCharacterPalette, None),
     ]);
+    // Linux 등: 종료 단축키는 두지 않는다 — 창 닫기는 컴포지터/WM 단축키나 닫기 버튼으로
+    // (사용자 결정). 종료 흐름은 on_app_quit에서 동일하게 graceful shutdown을 거친다.
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
-        KeyBinding::new("ctrl-q", Quit, None),
         // TextInput 표준 편집 액션 (gpui examples/input.rs 참고)
         KeyBinding::new("ctrl-a", SelectAll, None),
         KeyBinding::new("ctrl-c", Copy, None),
         KeyBinding::new("ctrl-v", Paste, None),
         KeyBinding::new("ctrl-x", Cut, None),
+        // ctrl = 단어 단위 이동/선택/삭제
+        KeyBinding::new("ctrl-left", WordLeft, None),
+        KeyBinding::new("ctrl-right", WordRight, None),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, None),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, None),
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, None),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, None),
     ]);
 
     // OS 공통 편집 키
@@ -196,8 +212,12 @@ fn open_main_window(model: Entity<IrcModel>, cx: &mut App) {
             titlebar: Some(TitlebarOptions {
                 title: Some("kirc-rs".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(point(px(10.), px(10.))),
+                // zeron: 신호등(높이 14) 중심 y=21 = 38px 컨트롤 줄 + 위쪽 패딩 4의 중심
+                traffic_light_position: Some(point(px(14.), px(14.))),
             }),
+            // 앱이 그린 창 이동 영역(WindowControlArea::Drag)을 macOS가 막지 않도록 표시
+            // (zeron: AppKit이 영역을 dead-zone 처리하거나 클릭을 지연시키지 않게)
+            app_owns_titlebar_drag: true,
             window_decorations: Some(WindowDecorations::Client),
             app_id: Some(APP_ID.to_string()),
             // 반투명 팔레트(One Light/Dark alpha)가 비치려면 네이티브 배경을

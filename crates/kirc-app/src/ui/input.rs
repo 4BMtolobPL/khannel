@@ -22,8 +22,9 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::action::{
-    Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft,
-    SelectRight, ShowCharacterPalette,
+    Backspace, Copy, Cut, Delete, DeleteWordLeft, DeleteWordRight, End, Home, Left, Paste, Right,
+    SelectAll, SelectLeft, SelectRight, SelectWordLeft, SelectWordRight, ShowCharacterPalette,
+    WordLeft, WordRight,
 };
 use crate::theme::Theme;
 
@@ -199,6 +200,90 @@ impl TextInput {
             return;
         }
         self.move_to(self.content.len(), window, cx);
+    }
+
+    // ---- 단어 단위 이동/선택/삭제 ----
+
+    fn word_left(&mut self, _: &WordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
+        let target = previous_word_boundary(&self.content, self.cursor_offset());
+        self.move_to(target, window, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
+        let target = next_word_boundary(&self.content, self.cursor_offset());
+        self.move_to(target, window, cx);
+    }
+
+    fn select_word_left(
+        &mut self,
+        _: &SelectWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let target = previous_word_boundary(&self.content, self.cursor_offset());
+        self.select_to(target, window, cx);
+    }
+
+    fn select_word_right(
+        &mut self,
+        _: &SelectWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let target = next_word_boundary(&self.content, self.cursor_offset());
+        self.select_to(target, window, cx);
+    }
+
+    /// 선택이 있으면 선택을, 없으면 커서 앞 단어를 지운다.
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        if self.selected_range.is_empty() {
+            let target = previous_word_boundary(&self.content, self.cursor_offset());
+            if target == self.cursor_offset() {
+                return;
+            }
+            self.select_to(target, window, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    /// 선택이 있으면 선택을, 없으면 커서 뒤 단어를 지운다.
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        if self.selected_range.is_empty() {
+            let target = next_word_boundary(&self.content, self.cursor_offset());
+            if target == self.cursor_offset() {
+                return;
+            }
+            self.select_to(target, window, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx)
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -851,6 +936,12 @@ impl Render for TextInput {
             .when(enabled, |d| d.cursor(CursorStyle::IBeam))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
@@ -879,11 +970,66 @@ impl Render for TextInput {
     }
 }
 
+/// `offset` 앞쪽의 단어 시작 위치. 공백을 건너뛴 뒤 그 단어의 처음으로 간다.
+///
+/// 단어 경계는 유니코드 단어 분할(UAX #29)을 따른다 — 한글은 붙어 있는 음절이 한 단어,
+/// `/` `,` 같은 구두점은 그 자체가 하나의 정지 지점이다. 글자 사이의 `.`은 단어를 끊지 않아
+/// `irc.libera.chat` 같은 주소는 한 단어로 다룬다.
+fn previous_word_boundary(text: &str, offset: usize) -> usize {
+    text.split_word_bound_indices()
+        .rev()
+        .find(|(start, segment)| *start < offset && !segment.trim().is_empty())
+        .map(|(start, _)| start)
+        .unwrap_or(0)
+}
+
+/// `offset` 뒤쪽의 단어 끝 위치. 공백을 건너뛴 뒤 그 단어의 끝으로 간다.
+fn next_word_boundary(text: &str, offset: usize) -> usize {
+    text.split_word_bound_indices()
+        .find(|(start, segment)| start + segment.len() > offset && !segment.trim().is_empty())
+        .map(|(start, segment)| start + segment.len())
+        .unwrap_or(text.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const VIEW: Pixels = px(100.);
+
+    #[test]
+    fn word_boundaries_skip_spaces_and_stop_at_words() {
+        let text = "hello  world foo";
+        // 단어 중간/끝에서 → 그 단어의 처음
+        assert_eq!(previous_word_boundary(text, 9), 7);
+        assert_eq!(previous_word_boundary(text, 12), 7);
+        // 단어 처음에서 → 앞 공백을 건너뛰어 앞 단어의 처음
+        assert_eq!(previous_word_boundary(text, 7), 0);
+        assert_eq!(previous_word_boundary(text, 0), 0);
+
+        assert_eq!(next_word_boundary(text, 0), 5);
+        // 공백 위에서 → 다음 단어의 끝
+        assert_eq!(next_word_boundary(text, 5), 12);
+        assert_eq!(next_word_boundary(text, 16), 16);
+    }
+
+    #[test]
+    fn word_boundaries_handle_korean_and_punctuation() {
+        let text = "안녕하세요 반가워요";
+        let second = "안녕하세요 ".len();
+        assert_eq!(previous_word_boundary(text, text.len()), second);
+        assert_eq!(next_word_boundary(text, 0), "안녕하세요".len());
+
+        // 단어를 끊는 구두점은 그 자체로 정지 지점
+        let text = "foo/bar";
+        assert_eq!(previous_word_boundary(text, 7), 4);
+        assert_eq!(previous_word_boundary(text, 4), 3);
+        assert_eq!(next_word_boundary(text, 0), 3);
+
+        // 글자 사이의 `.`은 단어를 끊지 않는다 (UAX #29) — 서버 주소는 한 단어
+        let text = "join irc.libera.chat";
+        assert_eq!(previous_word_boundary(text, text.len()), 5);
+    }
 
     #[test]
     fn short_text_never_scrolls() {
