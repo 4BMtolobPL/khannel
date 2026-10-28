@@ -6,14 +6,14 @@
 //! - 닫힐 때: nickErrors 삭제 + 입력 초기화
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
-    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use khannel_core::client::types::ServerId;
 
 use crate::action::Dismiss;
 use crate::model::IrcModel;
-use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
+use crate::overlay::modal::{DismissEvent, error_text, modal_overlay, modal_panel};
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 
@@ -45,15 +45,14 @@ impl ChangeNickModal {
         // 모달이 닫혀 있으면 server_id가 None이라 반응하지 않는다.
         cx.observe(&model, |this, model, cx| {
             let server_id = this.server_id;
-            if let Some(server_id) = server_id {
-                if model
+            if let Some(server_id) = server_id
+                && model
                     .update(cx, |m, _cx| m.take_nick_success(&server_id))
                     .is_some()
-                {
-                    this.clear_error(cx);
-                    this.server_id = None;
-                    cx.emit(DismissEvent);
-                }
+            {
+                this.clear_error(cx);
+                this.server_id = None;
+                cx.emit(DismissEvent);
             }
         })
         .detach();

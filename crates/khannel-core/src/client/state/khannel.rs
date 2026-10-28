@@ -1,7 +1,7 @@
 use crate::client::persistence::{KhannelStateSnapshot, ServerStateSnapshot};
 use crate::client::state::server::{ServerRuntime, ServerState};
-use crate::client::types::server::ServerConfig;
 use crate::client::types::ServerId;
+use crate::client::types::server::ServerConfig;
 use crate::memento::{Memento, Originator};
 use std::collections::HashMap;
 use std::path::PathBuf;

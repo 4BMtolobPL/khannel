@@ -7,9 +7,9 @@
 //! - macOS는 항상 `Decorations::Server`라 그대로 통과한다(네이티브 창 테두리 사용).
 
 use gpui::{
-    canvas, div, point, prelude::*, px, size, App, Bounds, CursorStyle, Decorations, Hitbox,
-    HitboxBehavior, Hsla, IntoElement, MouseButton, Pixels, Point, ResizeEdge, Size, Styled,
-    Tiling, Window,
+    App, Bounds, CursorStyle, Decorations, Hitbox, HitboxBehavior, Hsla, IntoElement, MouseButton,
+    Pixels, Point, ResizeEdge, Size, Styled, Tiling, Window, canvas, div, point, prelude::*, px,
+    size,
 };
 
 use crate::theme::Theme;
@@ -96,17 +96,19 @@ pub fn window_frame(content: impl IntoElement, window: &mut Window, cx: &App) ->
                 .when(!tiling.left, |d| d.border_l(BORDER))
                 .when(!tiling.right, |d| d.border_r(BORDER))
                 .when(!tiling.is_tiled(), |d| {
-                    d.shadow(vec![gpui::BoxShadow::new(
-                        px(0.),
-                        px(0.),
-                        Hsla {
-                            h: 0.,
-                            s: 0.,
-                            l: 0.,
-                            a: 0.4,
-                        },
-                    )
-                    .blur_radius(SHADOW / 2.)])
+                    d.shadow(vec![
+                        gpui::BoxShadow::new(
+                            px(0.),
+                            px(0.),
+                            Hsla {
+                                h: 0.,
+                                s: 0.,
+                                l: 0.,
+                                a: 0.4,
+                            },
+                        )
+                        .blur_radius(SHADOW / 2.),
+                    ])
                 })
                 // 내용 위에서는 리사이즈 판정을 하지 않는다
                 .on_mouse_move(|_, _, cx| cx.stop_propagation())

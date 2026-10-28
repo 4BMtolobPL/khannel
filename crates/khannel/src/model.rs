@@ -460,12 +460,12 @@ impl IrcModel {
                 old_nick,
                 new_nick,
             } => {
-                if let Some(server) = self.servers.get_mut(&server_id) {
-                    if nick_eq(&server.nickname, &old_nick) {
-                        server.nickname = new_nick.clone();
-                        // 모달로 요청한 변경일 때만 성공 처리 (강제 변경 등은 무시)
-                        self.nick_change.on_own_nick_changed(server_id, &new_nick);
-                    }
+                if let Some(server) = self.servers.get_mut(&server_id)
+                    && nick_eq(&server.nickname, &old_nick)
+                {
+                    server.nickname = new_nick.clone();
+                    // 모달로 요청한 변경일 때만 성공 처리 (강제 변경 등은 무시)
+                    self.nick_change.on_own_nick_changed(server_id, &new_nick);
                 }
                 let targets: Vec<String> = self
                     .channels
@@ -621,10 +621,11 @@ impl IrcModel {
             && self.current_channel_id.as_ref() == Some(&channel_id);
 
         // 현재 채널이 아니면 unread 증가
-        if !is_current && message.kind == MessageType::User {
-            if let Some(channel) = self.channels.get_mut(&channel_id) {
-                channel.unread = channel_unread + 1;
-            }
+        if !is_current
+            && message.kind == MessageType::User
+            && let Some(channel) = self.channels.get_mut(&channel_id)
+        {
+            channel.unread = channel_unread + 1;
         }
     }
 
@@ -654,11 +655,11 @@ impl IrcModel {
         last_read_message_id: Option<MessageId>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(channel) = self.channels.get_mut(channel_id) {
-            if channel.last_read_message_id != last_read_message_id {
-                channel.last_read_message_id = last_read_message_id;
-                cx.notify();
-            }
+        if let Some(channel) = self.channels.get_mut(channel_id)
+            && channel.last_read_message_id != last_read_message_id
+        {
+            channel.last_read_message_id = last_read_message_id;
+            cx.notify();
         }
     }
 

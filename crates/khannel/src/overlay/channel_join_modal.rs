@@ -3,13 +3,13 @@
 //! Svelte `ChannelJoinModal.svelte`의 포팅.
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
-    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 
 use crate::action::Dismiss;
 use crate::model::IrcModel;
-use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
+use crate::overlay::modal::{DismissEvent, error_text, modal_overlay, modal_panel};
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 

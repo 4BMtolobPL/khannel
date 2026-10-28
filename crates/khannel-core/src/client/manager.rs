@@ -7,9 +7,9 @@ use crate::client::state::app::AppState;
 use crate::client::state::khannel::KhannelState;
 use crate::client::types::server::ServerConfig;
 use crate::client::types::{ServerCommand, ServerId, ServerStatus};
-use anyhow::{anyhow, Context};
-use std::sync::atomic::{AtomicU8, Ordering};
+use anyhow::{Context, anyhow};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::{debug, info};
 
 pub struct KhannelManager {

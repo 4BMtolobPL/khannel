@@ -619,7 +619,31 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   - 앱 식별자 `com.kimtalmo.kirc-rs` → `com.kimtalmo.khannel`(데이터 폴더·Wayland app_id). 옛 데이터 폴더
     마이그레이션은 두지 않는다 — 사실상 사용자가 없는 v1.0 새 앱이라 불필요(사용자 결정).
   - 창 제목·macOS 메뉴·CTCP VERSION 응답(`khannel v<크레이트 버전>`)도 변경. 이 문서의 이전 기록은 이력이라 옛 이름 그대로 둔다.
-- 수동: "IRC client built with Tauri" → "IRC client built with GPUI". (저장소 이름 `kirc-rs` 변경 여부도 사용자 결정) (GitHub 저장소 설명 —
+- 수동: "IRC client built with Tauri" → "IRC client built with GPUI". (GitHub 저장소 설명 — 사용자가 직접 변경)
+  - GitHub 저장소 이름 `4BMtolobPL/kirc-rs` → `4BMtolobPL/khannel` 변경 완료(사용자, 2026-10-28). 로컬 `origin`도 새 주소로 변경.
+- **릴리스 패키징 결정 (2026-10-28, 사용자)** — 구현 전 계획:
+  - 버전 v1.0.0, 태그는 접두어 없이 `v1.0.0`(기존 `app-v0.1.0`/`kirc-v0.1.0`은 이력). 라이선스 MIT.
+  - macOS: cargo-packager로 `.app`/`.dmg`(arm64만), 서명 없이 ad-hoc 서명 — Developer ID 서명/공증은 환경변수로 켤 수 있게 확장 여지.
+    Homebrew Cask는 tap `4BMtolobPL/homebrew-tap`.
+  - Linux: RPM(.spec 하나). COPR 프로젝트 `is2ogc3tc2/khannel`, 대상 `fedora-44-x86_64`, `fedora-45-x86_64`,
+    `fedora-rawhide-x86_64`. 처음엔 로컬에서 의존성을 vendor한 SRPM을 만들어 `copr-cli`로 업로드, 이후 SCM/make_srpm 자동화.
+  - **P0 공통 준비 (2026-10-28)**: `[workspace.package]`(version 1.0.0, MIT, authors, repository/homepage)를 두고
+    두 크레이트가 상속(`publish = false`). `[profile.release]` thin LTO + strip. `LICENSE`(MIT) 추가.
+    `dist/`: 아이콘 원본 `app-icon.png`를 루트에서 이동, `generate-icons.sh`(ImageMagick)로 Linux hicolor
+    PNG(32~512)와 macOS용 `icon-1024.png`(1024 캔버스에 824px + 여백 — 꽉 찬 원본은 Dock에서 커 보임) 생성,
+    데스크톱 항목 `com.kimtalmo.khannel.desktop`(`StartupWMClass` = Wayland app_id)과 AppStream metainfo
+    (`desktop-file-validate`, `appstreamcli validate --pedantic` 통과).
+    - **edition 2024 + resolver 3 (사용자 요청)**: edition 2021 상태에서 `cargo fix --edition`을 먼저 적용한 뒤 올렸다.
+      `if let … else`를 `match`로 바꾼 자동 수정 3곳은 조건식 임시값이 락 가드가 아니라 의미 차이가 없어 되돌렸고,
+      `impl IntoElement + use<>`(메뉴 렌더 — RPIT가 `&mut self`를 붙잡지 않음)는 유지. 2024 clippy의 let-chains
+      제안(collapsible_if 8곳)은 `clippy --fix`로 적용, rustfmt 2024 스타일로 재포맷.
+      `tail_expr_drop_order` lint 검토 중 **`ServerState::abort_connecting`이 Connecting이 아닌 상태를 꺼낸 뒤 버리는**
+      버그 발견(2번 `transition_*`과 같은 패턴) — 상태 유지로 수정, 테스트 추가. 나머지 경고 위치는 영향 없음.
+    - **의존성 라이선스 고지**: cargo-about(`about.toml`, `about.hbs` → `THIRD_PARTY_NOTICES.md`). 배포 대상
+      (aarch64-apple-darwin, x86_64-unknown-linux-gnu)만, 빌드/개발 의존성 제외. 의존성 666개 라이선스 집계 결과 모두
+      허용적(GPL/LGPL은 OR 대안으로만 존재, MPL-2.0 3개는 미수정 사용). gpui 등 zed 크레이트는 `publish = false`라
+      cargo-about의 private 무시 옵션을 쓰면 누락되므로 쓰지 않는다(우리 크레이트도 목록에 남음 — MIT라 무해).
+    - macOS 아이콘에 Apple 템플릿 같은 옅은 그림자 추가(사용자 동의). AppStream metainfo의 릴리스 날짜는 태그 직전에 실제 날짜로 갱신. (GitHub 저장소 설명 —
   사용자가 직접 변경)
 
 ---

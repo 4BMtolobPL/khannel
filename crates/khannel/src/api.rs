@@ -4,8 +4,8 @@
 //! - 모든 명령이 tokio 런타임 컨텍스트 안에서 실행되도록 enter() 가드 사용
 //! - UiEvent 채널 sink는 여기서 만들어 manager에 주입
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use khannel_core::client::commands::{

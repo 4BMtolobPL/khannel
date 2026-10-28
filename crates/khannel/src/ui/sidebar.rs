@@ -6,13 +6,14 @@
 //! state에 해당한다.
 
 use gpui::{
-    div, prelude::*, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Styled, Window,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Styled, Window, div,
+    prelude::*, px,
 };
 use khannel_core::client::types::ServerId;
 
 use crate::model::{Channel, IrcModel, Server, UiServerStatus};
-use crate::theme::{status_dot_color, Theme};
+use crate::theme::{Theme, status_dot_color};
 
 // ==================================== 이벤트 ====================================
 

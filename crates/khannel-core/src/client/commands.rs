@@ -1,4 +1,4 @@
-use crate::client::event::{emit_channel_lock_changed, EventSender};
+use crate::client::event::{EventSender, emit_channel_lock_changed};
 use crate::client::manager::KhannelManager;
 use crate::client::types::{ServerCommand, ServerId, ServerStatus};
 use crate::error::MyCustomError;

@@ -1,4 +1,4 @@
-use crate::client::ctcp::{parse_ctcp, CtcpCommand};
+use crate::client::ctcp::{CtcpCommand, parse_ctcp};
 use crate::client::event::EventSender;
 use crate::client::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
@@ -7,12 +7,12 @@ use crate::client::state::khannel::KhannelState;
 use crate::client::state::server::ServerState;
 use crate::client::types::{ServerCommand, ServerId, ServerStatus};
 use futures::prelude::*;
-use irc::client::prelude::*;
 use irc::client::ClientStream;
+use irc::client::prelude::*;
 use irc::error;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -991,12 +991,13 @@ mod quit_tests {
                     if line.starts_with("USER") {
                         user = true;
                     }
-                    if !registered && user {
-                        if let Some(nick) = &nick {
-                            registered = true;
-                            let reply = format!(":mock 001 {nick} :Welcome\r\n");
-                            let _ = write.write_all(reply.as_bytes()).await;
-                        }
+                    if !registered
+                        && user
+                        && let Some(nick) = &nick
+                    {
+                        registered = true;
+                        let reply = format!(":mock 001 {nick} :Welcome\r\n");
+                        let _ = write.write_all(reply.as_bytes()).await;
                     }
                 }
                 conn += 1;

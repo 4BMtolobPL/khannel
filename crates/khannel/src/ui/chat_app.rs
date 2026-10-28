@@ -6,9 +6,8 @@
 //! 이 엔티티의 필드로 이관되었다.
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, Context, Decorations, Entity, FontWeight, IntoElement,
-    MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render, Styled, Window,
-    WindowControlArea,
+    ClickEvent, Context, Decorations, Entity, FontWeight, IntoElement, MouseButton, MouseMoveEvent,
+    ParentElement, Pixels, Point, Render, Styled, Window, WindowControlArea, div, prelude::*, px,
 };
 use khannel_core::client::types::ServerId;
 
@@ -16,7 +15,7 @@ use crate::model::IrcModel;
 use crate::overlay::change_nick_modal::ChangeNickModal;
 use crate::overlay::channel_join_modal::ChannelJoinModal;
 use crate::overlay::context_menu::{
-    anchored_menu, context_menu_container, context_menu_item, context_menu_separator, MenuItemStyle,
+    MenuItemStyle, anchored_menu, context_menu_container, context_menu_item, context_menu_separator,
 };
 use crate::overlay::modal::DismissEvent;
 use crate::overlay::remove_server_modal::RemoveServerModal;
@@ -275,7 +274,7 @@ impl ChatApp {
         &mut self,
         state: ServerMenuState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let theme = Theme::current(cx);
         let model = self.model.clone();
         let chat = cx.entity();
@@ -389,7 +388,7 @@ impl ChatApp {
         &mut self,
         state: ChannelMenuState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let theme = Theme::current(cx);
         let model = self.model.clone();
         let chat = cx.entity();

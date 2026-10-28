@@ -12,12 +12,12 @@
 use std::ops::Range;
 
 use gpui::{
-    div, fill, prelude::*, px, rgba, App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle,
-    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, GlobalElementId, InspectorElementId, InteractiveElement, KeyDownEvent, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
-    Point, Render, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
-    Window,
+    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    GlobalElementId, InspectorElementId, InteractiveElement, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, div, fill,
+    prelude::*, px, rgba,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -910,10 +910,8 @@ impl Element for TextInputElement {
             )
             .unwrap();
 
-            if show_cursor {
-                if let Some(cursor) = prepaint.cursor.take() {
-                    window.paint_quad(cursor);
-                }
+            if show_cursor && let Some(cursor) = prepaint.cursor.take() {
+                window.paint_quad(cursor);
             }
         });
 

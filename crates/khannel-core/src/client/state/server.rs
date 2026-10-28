@@ -283,14 +283,20 @@ impl ServerState {
         }
     }
 
+    /// 연결 시도(Connecting) 중이면 취소하고 true. 그 밖의 상태면 현재 상태를 유지하고 false.
+    /// (UI 상태가 늦어 이미 Registering 등으로 넘어간 뒤 취소가 들어와도 세션을 버리지 않는다)
     pub fn abort_connecting(&self) -> bool {
         let mut guard = self.runtime.lock().unwrap();
-        if let ServerRuntime::Connecting { handle } = std::mem::take(&mut *guard) {
-            handle.abort();
-            *guard = ServerRuntime::Disconnected;
-            true
-        } else {
-            false
+        match std::mem::take(&mut *guard) {
+            ServerRuntime::Connecting { handle } => {
+                handle.abort();
+                *guard = ServerRuntime::Disconnected;
+                true
+            }
+            other => {
+                *guard = other;
+                false
+            }
         }
     }
 
@@ -423,6 +429,24 @@ mod tests {
         server.disconnect();
         server.transition_to_connected();
         assert_eq!(server.status(), ServerStatus::Disconnecting);
+    }
+
+    /// Connecting이 아닐 때의 취소는 현재 상태(예: Registering 세션)를 버리지 않는다.
+    /// (이전: 꺼낸 상태를 버려 Disconnected로 남기고 tx/handle을 잃었다)
+    #[tokio::test]
+    async fn abort_connecting_keeps_other_states() {
+        let server = test_server();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        server.transition_to_registering(tx);
+
+        assert!(!server.abort_connecting());
+        assert_eq!(server.status(), ServerStatus::Registering);
+
+        // Disconnected/Failed도 그대로
+        server.transition_to_failed("x".to_string());
+        assert!(!server.abort_connecting());
+        assert_eq!(server.status(), ServerStatus::Failed);
     }
 
     /// 액터가 락 대기 없이 곧바로 실패를 기록하려 해도 Connecting 확정 이후에 반영된다.

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    point, prelude::*, px, App, Bounds, Entity, Global, KeyBinding, Menu, MenuItem, Size,
-    TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions,
+    App, Bounds, Entity, Global, KeyBinding, Menu, MenuItem, Size, TitlebarOptions, WindowBounds,
+    WindowDecorations, WindowOptions, point, prelude::*, px,
 };
 use gpui_platform::application;
 use khannel_core::client::persistence::KhannelStateSnapshot;
@@ -28,7 +28,7 @@ use crate::action::{
     Quit, Right, SelectAll, SelectLeft, SelectRight, SelectWordLeft, SelectWordRight, WordLeft,
     WordRight,
 };
-use crate::api::{build_khannel, setup, UiApi};
+use crate::api::{UiApi, build_khannel, setup};
 use crate::model::IrcModel;
 use crate::ui::chat_app::ChatApp;
 
@@ -88,10 +88,10 @@ fn main() {
     // (macOS 기본 종료 정책은 마지막 창을 닫아도 앱을 종료하지 않는다. Linux는 마지막 창을
     //  닫으면 종료하므로 이 경로를 타지 않는다.)
     app.on_reopen(|cx| {
-        if cx.windows().is_empty() {
-            if let Some(model) = cx.try_global::<MainModel>().map(|m| m.0.clone()) {
-                open_main_window(model, cx);
-            }
+        if cx.windows().is_empty()
+            && let Some(model) = cx.try_global::<MainModel>().map(|m| m.0.clone())
+        {
+            open_main_window(model, cx);
         }
     });
 

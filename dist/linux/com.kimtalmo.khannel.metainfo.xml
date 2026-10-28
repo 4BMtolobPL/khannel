@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.kimtalmo.khannel</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>khannel</name>
+  <summary>IRC client built with GPUI</summary>
+  <developer id="com.kimtalmo">
+    <name>Talmo Kim</name>
+  </developer>
+  <description>
+    <p>
+      khannel is a desktop IRC client for Linux and macOS with multiple server connections,
+      per-channel unread tracking, channel locking and IME (including Korean) input.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.kimtalmo.khannel.desktop</launchable>
+  <url type="homepage">https://github.com/4BMtolobPL/khannel</url>
+  <url type="bugtracker">https://github.com/4BMtolobPL/khannel/issues</url>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Network</category>
+    <category>Chat</category>
+    <category>IRCClient</category>
+  </categories>
+  <releases>
+    <release version="1.0.0" date="2026-10-28"/>
+  </releases>
+</component>

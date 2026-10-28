@@ -12,7 +12,7 @@
 //! GPUI에서는 [`Theme::current`]가 `cx.window_appearance()`로 동일한 기준으로 선택한다.
 //! (MIGRATION.md Phase 3 표: "Tailwind class → GPUI 스타일 (dark mode: ActiveTheme 환경 or 자체 toggle)")
 
-use gpui::{rgb, rgba, App, Rgba, WindowAppearance};
+use gpui::{App, Rgba, WindowAppearance, rgb, rgba};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {

@@ -1,8 +1,8 @@
 use crate::client::state::channel::ChannelState;
 use crate::client::state::khannel::KhannelState;
 use crate::client::state::server::ServerState;
-use crate::client::types::server::ServerConfig;
 use crate::client::types::ChannelId;
+use crate::client::types::server::ServerConfig;
 use crate::memento::Memento;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

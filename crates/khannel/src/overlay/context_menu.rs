@@ -4,7 +4,7 @@
 //! 좌표/노출 플래그는 기존 state와 동일하게 ChatApp이 소유하고, 외부 클릭 시
 //! 닫는 동작은 `on_mouse_down_out`으로 구현한다 (Svelte의 window click listener 대체).
 
-use gpui::{div, prelude::*, px, Div, IntoElement, Styled};
+use gpui::{Div, IntoElement, Styled, div, prelude::*, px};
 
 use crate::theme::Theme;
 

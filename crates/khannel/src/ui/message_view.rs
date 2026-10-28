@@ -11,8 +11,8 @@
 //!   메시지가 화면 안에 다 들어오면 진입 즉시 lastRead가 갱신되어 divider가 사라졌다.)
 
 use gpui::{
-    div, list, prelude::*, px, Context, Entity, FontWeight, IntoElement, ListAlignment, ListState,
-    ParentElement, Render, Styled, Window,
+    Context, Entity, FontWeight, IntoElement, ListAlignment, ListState, ParentElement, Render,
+    Styled, Window, div, list, prelude::*, px,
 };
 
 use crate::model::{IrcModel, MessageType};
@@ -168,23 +168,23 @@ impl MessageView {
 
         if same_channel {
             let prev_count = self.rendered.as_ref().map(|(_, count)| *count);
-            if let Some(prev_count) = prev_count {
-                if count > prev_count {
-                    // 실시간 divider: 위로 스크롤해 둔 상태(following 아님)에서 새 메시지가 오면
-                    // 새로 들어온 첫 메시지 위에 divider를 만든다. 맨 아래에서 따라가는 중이면
-                    // 바로 읽은 것으로 보아 만들지 않는다. (following 여부는 직전 레이아웃 기준)
-                    if self.divider_before.is_none() && !self.list_state.is_following_tail() {
-                        let model = self.model.read(cx);
-                        let own_nickname = model.current_server().map(|s| s.nickname.as_str());
-                        self.divider_before = model
-                            .visible_messages()
-                            .and_then(|messages| unread_from(messages, prev_count, own_nickname));
-                    }
-                    // splice의 두 번째 인자는 "새로 끼워 넣을 항목 수"다.
-                    // (이전: 전체 개수 count를 넘겨 메시지마다 list 항목이 count개씩 불어났다)
-                    self.list_state
-                        .splice(prev_count..prev_count, count - prev_count);
+            if let Some(prev_count) = prev_count
+                && count > prev_count
+            {
+                // 실시간 divider: 위로 스크롤해 둔 상태(following 아님)에서 새 메시지가 오면
+                // 새로 들어온 첫 메시지 위에 divider를 만든다. 맨 아래에서 따라가는 중이면
+                // 바로 읽은 것으로 보아 만들지 않는다. (following 여부는 직전 레이아웃 기준)
+                if self.divider_before.is_none() && !self.list_state.is_following_tail() {
+                    let model = self.model.read(cx);
+                    let own_nickname = model.current_server().map(|s| s.nickname.as_str());
+                    self.divider_before = model
+                        .visible_messages()
+                        .and_then(|messages| unread_from(messages, prev_count, own_nickname));
                 }
+                // splice의 두 번째 인자는 "새로 끼워 넣을 항목 수"다.
+                // (이전: 전체 개수 count를 넘겨 메시지마다 list 항목이 count개씩 불어났다)
+                self.list_state
+                    .splice(prev_count..prev_count, count - prev_count);
             }
         } else {
             // 채널 전환(또는 첫 렌더): divider 위치 고정 + 스크롤 복원

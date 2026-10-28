@@ -5,8 +5,8 @@
 //! git dep(zed)과 소스가 달라 타입이 통일되지 않음 → MIGRATION.md의 "자체 오버레이" 선택)
 
 use gpui::{
-    deferred, div, prelude::*, px, App, ClickEvent, Div, IntoElement, ParentElement, SharedString,
-    Styled, Window,
+    App, ClickEvent, Div, IntoElement, ParentElement, SharedString, Styled, Window, deferred, div,
+    prelude::*, px,
 };
 
 use crate::action::Dismiss;

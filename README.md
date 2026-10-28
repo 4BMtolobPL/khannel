@@ -177,3 +177,14 @@ debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다.
 
 저장되는 정보: 서버 호스트·포트·TLS·닉네임, 참가 중인 채널 목록 및 잠금 상태.
 메시지 히스토리는 세션 내 메모리에만 유지되며 저장되지 않습니다.
+
+## 배포 자산 (`dist/`)
+
+- `app-icon.png` — 아이콘 원본 (1536px). `dist/generate-icons.sh`로 아래 아이콘을 다시 만든다 (ImageMagick 필요).
+- `linux/` — 데스크톱 항목(`com.kimtalmo.khannel.desktop`), AppStream metainfo, hicolor 아이콘(32~512px)
+- `macos/icon-1024.png` — macOS 아이콘 그리드에 맞춰 여백과 옅은 그림자를 둔 1024px 아이콘 (패키징 시 `.icns`로 변환)
+
+## 라이선스
+
+[MIT](LICENSE). 배포 바이너리에 포함되는 의존성의 라이선스 고지는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 있다
+(의존성이 바뀌면 `cargo about generate about.hbs -o THIRD_PARTY_NOTICES.md`로 다시 생성 — `about.toml` 참고).

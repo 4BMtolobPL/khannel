@@ -4,8 +4,8 @@
 //! 간이 composer를 IME 지원 TextInput 엔티티로 교체했다 (MIGRATION.md Phase 3).
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, Entity, Focusable, IntoElement, ParentElement,
-    Render, StatefulInteractiveElement, Styled, Window,
+    App, ClickEvent, Context, Entity, Focusable, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 
 use crate::model::IrcModel;

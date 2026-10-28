@@ -1,6 +1,6 @@
 use crate::memento::Memento;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::Path;
 use tracing::debug;

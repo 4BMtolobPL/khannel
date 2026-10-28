@@ -4,14 +4,14 @@
 //! 필드 아래 빨간 텍스트로 표시한다.
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
-    ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 
 use crate::action::Dismiss;
 use crate::model::IrcModel;
 use crate::overlay::modal::{
-    error_text, field_label, modal_header, modal_overlay, modal_panel, DismissEvent,
+    DismissEvent, error_text, field_label, modal_header, modal_overlay, modal_panel,
 };
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};

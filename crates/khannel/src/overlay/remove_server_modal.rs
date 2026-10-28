@@ -4,14 +4,14 @@
 //! "Delete Server"는 이 확인을 거친다. Enter = 삭제, Esc = 취소.
 
 use gpui::{
-    div, prelude::*, px, ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight,
-    IntoElement, KeyDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+    ClickEvent, Context, Entity, EventEmitter, FocusHandle, FontWeight, IntoElement, KeyDownEvent,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use khannel_core::client::types::ServerId;
 
 use crate::action::Dismiss;
 use crate::model::IrcModel;
-use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
+use crate::overlay::modal::{DismissEvent, error_text, modal_overlay, modal_panel};
 use crate::theme::Theme;
 
 pub struct RemoveServerModal {
