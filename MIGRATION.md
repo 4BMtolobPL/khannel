@@ -399,6 +399,13 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 
 6. **lock/join/part가 즉시 영속되지 않음** (`commands.rs` lock/unlock, `manager.rs` join/part).
    `save_snapshot` 호출이 없어 정상 종료 시(`prepare_shutdown`)에만 저장 → 크래시/kill 시 유실.
+   - **해결 (2026-10-28)**: `KircState::persist()`(실패는 warn 로깅만, 명령은 성공 처리)를
+     lock/unlock 직후, join(새 채널 항목 생성 시)/part(항목 제거 시) 직후 호출.
+     함께 `save_snapshot`에 저장 직렬화 락(동일 `.tmp` 경합 방지)과 **drain 이후 저장 차단**
+     (`drained` 플래그 — 저장 경로가 늘어나 빈 맵으로 config.json을 덮어쓸 위험이 커지므로)을 추가.
+   - 테스트: `core::quit_tests::channel_changes_are_persisted_immediately`(mock 서버 연결 후
+     join→lock→unlock→part 각 단계마다 config.json 재로드로 확인),
+     `state::kirc::tests::save_after_drain_keeps_last_snapshot`. 둘 다 수정을 빼면 실패 확인.
 7. **채널 전환 시 스크롤 복원이 자동 스크롤을 멈춤** (`message_view.rs` `sync_list`).
    lastRead == 마지막 메시지(흔한 경우)여도 `pause_following_tail()` → 수동으로 맨 아래로
    내리기 전까지 새 메시지를 따라가지 않는다. 마지막 index면 Tail 유지.
@@ -420,6 +427,8 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   로컬 에코는 전체 표시.
 - `is_shutting_down`이 Terminated를 막지 않음 (`manager.rs`) — 종료 후 `add_server` 시
   drain된 빈 맵으로 config.json 덮어쓰기 가능(이론상).
+  → **덮어쓰기는 해결 (2026-10-28, 6번)**: drain 이후 `save_snapshot`이 no-op. Terminated 상태의
+  명령 수락 자체(`is_shutting_down`)는 그대로.
 - ChannelJoinModal도 실패 시 피드백 없이 닫힘(미연결 서버) — ServerModal 항목과 동일 계열.
 - Phase 3 잔여 그대로: render 내 `window.focus()` (`chat_app.rs`), `impl UiApi` 통째
   `#[allow(dead_code)]`, 모달/InputBar의 미사용 `api` 필드.

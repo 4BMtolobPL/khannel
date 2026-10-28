@@ -544,4 +544,65 @@ mod quit_tests {
 
         mock.abort();
     }
+
+    /// 디스크의 config.json을 다시 읽어 채널명 → locked 맵으로 돌려준다.
+    fn load_saved_channels(path: &std::path::Path) -> HashMap<String, bool> {
+        use crate::kirc::persistence::KircStateSnapshot;
+        use crate::memento::Memento;
+
+        let snapshot: KircStateSnapshot = crate::fs::load(path).unwrap();
+        let state: KircState = snapshot.restore();
+        state
+            .get_all_servers()
+            .values()
+            .flat_map(|server| server.channels())
+            .map(|(name, channel)| (name, channel.locked))
+            .collect()
+    }
+
+    /// lock/unlock/join/part는 정상 종료를 기다리지 않고 즉시 config.json에 반영된다.
+    #[tokio::test]
+    async fn channel_changes_are_persisted_immediately() {
+        use crate::kirc::commands::{ChannelPayload, KircApi};
+
+        let (port, _mock) = spawn_mock_server().await;
+        let path = std::env::temp_dir().join(format!("kirc-test-{}.json", uuid::Uuid::now_v7()));
+
+        let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
+        let mut state =
+            KircState::from_iter([ServerStateSnapshot::new(config.clone(), HashMap::new())]);
+        state.set_persistence_path(&path);
+        let state = Arc::new(state);
+        let server_id = *state.get_all_servers().keys().next().unwrap();
+
+        let (tx, mut rx) = unbounded_channel::<UiEvent>();
+        let sink: EventSender = Arc::new(tx);
+        let api = KircApi::new(Arc::new(KircManager::new(state.clone(), sink.clone())));
+
+        api.connect_server(crate::kirc::commands::ConnectServerPayload::new(
+            Some(server_id),
+            "127.0.0.1".to_string(),
+            port,
+            false,
+            "nick".to_string(),
+        ))
+        .unwrap();
+        wait_for_status(&mut rx, server_id, ServerStatus::Connected).await;
+
+        let payload = ChannelPayload::new(server_id, "#test".to_string());
+
+        api.join_channel(server_id, "#test").unwrap();
+        assert_eq!(load_saved_channels(&path).get("#test"), Some(&false));
+
+        api.lock_channel(&payload, &sink).unwrap();
+        assert_eq!(load_saved_channels(&path).get("#test"), Some(&true));
+
+        api.unlock_channel(&payload, &sink).unwrap();
+        assert_eq!(load_saved_channels(&path).get("#test"), Some(&false));
+
+        api.leave_channel(&payload).unwrap();
+        assert_eq!(load_saved_channels(&path).get("#test"), None);
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

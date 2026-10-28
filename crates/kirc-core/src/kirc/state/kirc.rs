@@ -5,12 +5,19 @@ use crate::kirc::types::ServerId;
 use crate::memento::{Memento, Originator};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 pub struct KircState {
     servers: Mutex<HashMap<ServerId, Arc<ServerState>>>,
     persistence_path: Option<PathBuf>,
+    /// 동시 저장 직렬화 — 같은 `.tmp` 파일에 두 저장이 섞여 쓰이지 않게 한다.
+    save_lock: Mutex<()>,
+    /// `drain_runtimes` 이후 true. 서버 맵이 비었으므로 이후 저장은 config.json을
+    /// 빈 상태로 덮어쓰게 된다 → 저장을 막는다 (최종 저장은 drain 이전 `prepare_shutdown`).
+    drained: AtomicBool,
 }
 
 impl KircState {
@@ -41,6 +48,7 @@ impl KircState {
 
     pub fn drain_runtimes(&self) -> Vec<ServerRuntime> {
         let mut guard = self.servers.lock().unwrap();
+        self.drained.store(true, Ordering::Release);
         guard
             .drain()
             .map(|(_, state)| state.take_runtime())
@@ -54,11 +62,23 @@ impl KircState {
     }
 
     pub fn save_snapshot(&self) -> anyhow::Result<()> {
-        if let Some(path) = &self.persistence_path {
-            let snapshot = self.snapshot();
-            crate::fs::save(path, snapshot)
-        } else {
+        let Some(path) = &self.persistence_path else {
             anyhow::bail!("No persistence path was provided")
+        };
+
+        let _save = self.save_lock.lock().unwrap();
+        if self.drained.load(Ordering::Acquire) {
+            debug!("Skip snapshot save after drain (would overwrite config with empty state)");
+            return Ok(());
+        }
+        let snapshot = self.snapshot();
+        crate::fs::save(path, snapshot)
+    }
+
+    /// 상태 변경(lock/join/part) 직후 영속화. 저장 실패는 명령 자체를 실패시키지 않고 로깅만 한다.
+    pub fn persist(&self) {
+        if let Err(e) = self.save_snapshot() {
+            warn!(error = %e, "Failed to save snapshot");
         }
     }
 }
@@ -73,6 +93,8 @@ impl FromIterator<ServerStateSnapshot> for KircState {
         Self {
             servers: Mutex::new(server_map),
             persistence_path: None,
+            save_lock: Mutex::new(()),
+            drained: AtomicBool::new(false),
         }
     }
 }
@@ -81,5 +103,32 @@ impl Originator<KircStateSnapshot> for KircState {
     fn snapshot(&self) -> KircStateSnapshot {
         let servers = self.servers.lock().unwrap();
         KircStateSnapshot::from_iter(servers.values().map(|state| state.snapshot()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kirc::types::server::ServerConfig;
+
+    /// drain 이후의 저장은 config.json을 빈 서버 목록으로 덮어쓰지 않는다.
+    #[test]
+    fn save_after_drain_keeps_last_snapshot() {
+        let path = std::env::temp_dir().join(format!("kirc-test-{}.json", Uuid::now_v7()));
+        let config = ServerConfig::new("irc.test".to_string(), 6667, false, "nick".to_string());
+        let mut state = KircState::from_iter([ServerStateSnapshot::new(config, HashMap::new())]);
+        state.set_persistence_path(&path);
+
+        state.save_snapshot().unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        state.drain_runtimes();
+        state.save_snapshot().unwrap();
+        state.persist();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(before.contains("irc.test"));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

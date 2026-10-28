@@ -142,6 +142,7 @@ impl KircManager {
         // `locked: false` 덮어쓰기되면 안 된다 (Phase 4 정규화 이후 스냅샷 영속 대상).
         if !server.contains_channel(channel_name) {
             server.insert_channel(channel_name, false);
+            self.kirc_state.persist();
         }
 
         Ok(())
@@ -155,7 +156,9 @@ impl KircManager {
         server.send_command(ServerCommand::Part {
             channel_name: channel_id.to_string(),
         })?;
-        server.remove_channel(channel_id);
+        if server.remove_channel(channel_id).is_some() {
+            self.kirc_state.persist();
+        }
 
         Ok(())
     }

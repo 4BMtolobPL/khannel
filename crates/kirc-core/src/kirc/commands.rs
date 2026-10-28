@@ -129,6 +129,7 @@ impl KircApi {
             .get_server(payload.server_id())
             .context("Can't find server")?;
         server.set_channel_locked(payload.channel(), true);
+        state.persist();
 
         emit_channel_lock_changed(ui_sink, payload.server_id(), payload.channel(), true);
 
@@ -143,6 +144,7 @@ impl KircApi {
         let state = self.manager.kirc_state();
         if let Some(server) = state.get_server(payload.server_id()) {
             server.set_channel_locked(payload.channel(), false);
+            state.persist();
         }
 
         emit_channel_lock_changed(ui_sink, payload.server_id(), payload.channel(), false);
