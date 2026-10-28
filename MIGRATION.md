@@ -329,6 +329,77 @@ Tauri 버전과 나란히 실행해 다음을 검증:
    - 잠금 버튼 이모지가 중앙 정렬되지 않음 → 버튼 flex 가운데 정렬.
    - macOS IME(한글 입력) 상세 검증은 잔여 — Wayland 스모크 반복으로 대체 중.
 
+#### 전체 코드 리뷰 → 잔여 항목 (2026-10-28)
+
+완료 표시와 무관하게 `crates/kirc-core` + `crates/kirc-app` 전체를 재검토한 결과.
+근거는 lock된 zed `6b985a8`(gpui) / `irc 1.1.0` 소스 대조. 실행 재현이 아닌 코드 판독 기반.
+1·2번은 Phase 4 패리티 결과를 왜곡하므로 수동 검증 재개 전에 수정한다.
+
+**높음 (실제 오동작)**
+
+1. **QUIT가 서버로 flush되지 않음** (`core.rs` `run_session`의 Quit 분기).
+   `send_quit` 직후 루프를 빠져나와 `ClientStream`이 drop된다. irc 1.1.0은 소켓 쓰기를
+   담당하는 `Outgoing`을 `ClientStream::poll_next` 안에서만 구동하므로
+   (`irc/src/client/mod.rs` `poll_next`) 큐잉된 QUIT가 쓰이지 않은 채 연결이 끊긴다.
+   Disconnect·앱 종료 모두 해당 → 패리티 #4 실패 원인. 수정: QUIT 후 짧은 timeout 동안
+   stream을 None/Err까지 계속 poll.
+   - **해결 (2026-10-28)**: `drain_after_quit` — QUIT 후 최대 2s(`QUIT_DRAIN_TIMEOUT`,
+     `graceful_shutdown`의 5s보다 짧게) stream을 poll. 회귀 테스트
+     `core::quit_tests::quit_is_flushed_to_server_on_disconnect`(로컬 mock IRC 서버가 QUIT
+     줄 수신 여부 확인)는 수정을 빼면 실패, 넣으면 통과함을 확인.
+   - 앱 종료 시 UI 캡(600ms)을 넘겨도 QUIT 쓰기는 drain 첫 poll에서 일어나므로 영향 없음.
+2. **연결 상태 전이 경쟁 조건** (`manager.rs` `run_server`, `state/server.rs` `transition_*`).
+   액터를 spawn한 **뒤** `transition_to_connecting`을 호출하고, `transition_*`은
+   `mem::take` 후 상태 불일치 시 원래 값을 복원하지 않는다(→ Disconnected, tx/handle 유실).
+   빠른 연결 실패(예: localhost connection refused) 시 `fail()`이 기록한 Failed를
+   `Connecting{종료된 handle}`이 덮어써 `is_active()`가 영구 true → 재연결이
+   "Already connecting"으로 거부된다. 수정: spawn 전에 Connecting 확정 + 불일치 시 복원.
+   - 1번 테스트 작성 중 재현: Connecting을 거치지 않고 액터를 돌리면 `transition_to_registering`이
+     tx를 버려 커맨드 채널이 즉시 닫히고 세션이 Registering 직후 종료된다(불일치 시 값 유실 확인).
+3. **컨텍스트 메뉴 클릭 통과 + 항목 선택 후 안 닫힘** (`chat_app.rs` 메뉴 렌더, `context_menu.rs`).
+   `occlude()`가 없으면 gpui는 아래 hitbox도 hovered로 판정(`window.rs` `Hitbox::is_hovered`)
+   → "Disconnect" 등 클릭 시 아래 서버/채널 row의 `on_click`도 실행되고 hover도 켜진다.
+   닫힘은 `on_mouse_down_out`뿐이라 Change Nickname 외 항목은 클릭 후에도 메뉴가 남는다.
+   수정: 메뉴 컨테이너 `.occlude()` + 각 항목에서 `close_menus`. 모달 스크림(`modal.rs`)도
+   stop_propagation 6개를 `.occlude()`로 교체(뒤쪽 hover/스크롤 휠까지 차단).
+4. **접속 시 닉 중복이면 Registering에서 정지** (`core.rs` `NoUsableNick` 분기).
+   `alt_nicks: vec![]`이라 등록 단계 433/432는 `NoUsableNick`이 되는데, 코어는 이를
+   "닉변 실패"로만 처리하고 계속 진행 → 등록이 끝나지 않고, 에러는 `nick_errors`에만
+   있어 닉변 모달을 열어야 보인다. 수정: Registering 상태에서는 사유와 함께 `fail()`.
+5. **사이드바 서버/채널 순서 무작위** (`sidebar.rs` — `HashMap::values()` 순회).
+   SvelteMap은 삽입 순서 유지 → 패리티 회귀. 수정: `IndexMap` 또는 정렬.
+
+**중간**
+
+6. **lock/join/part가 즉시 영속되지 않음** (`commands.rs` lock/unlock, `manager.rs` join/part).
+   `save_snapshot` 호출이 없어 정상 종료 시(`prepare_shutdown`)에만 저장 → 크래시/kill 시 유실.
+7. **채널 전환 시 스크롤 복원이 자동 스크롤을 멈춤** (`message_view.rs` `sync_list`).
+   lastRead == 마지막 메시지(흔한 경우)여도 `pause_following_tail()` → 수동으로 맨 아래로
+   내리기 전까지 새 메시지를 따라가지 않는다. 마지막 index면 Tail 유지.
+8. **MessageView 렌더 비용 O(n)** (`message_view.rs` render) — 렌더마다 메시지 `Vec` 전체
+   clone, `sync_list`가 렌더 중 모델 update. `Arc` 기반 저장/entity 참조로 개선.
+9. **긴 입력이 Send 버튼 위로 넘침** (`input.rs` prepaint, `input_bar.rs` 입력 상자) —
+   TextInput에 가로 스크롤/clip 없음, 커서가 화면 밖으로 나감.
+10. **서버 메시지 미표시** (`model.rs` `add_server_message`) — `server_messages`를 렌더하는
+    곳이 없어 "서버에 연결되었습니다."/IRC `ERROR`가 보이지 않는다(Svelte 동일, 4번의 근본 원인).
+11. **ChangeNickModal 즉시 닫힘 가능** (`model.rs` Nick 분기, `change_nick_modal.rs` `open_for`) —
+    모달 밖에서 생긴 자기 닉 변경도 `nick_success`에 쌓이고, `open_for`가 지우지 않아
+    모달을 연 직후 첫 notify에 닫힌다.
+
+**낮음 / Svelte 상속 / nit**
+
+- 닉 비교 대소문자 구분 (`core.rs` NICK, `model.rs` Join/Part/Nick) — IRC 닉은 대소문자 무시.
+- 나에게 온 DM이 target(내 닉) 이름 채널에 쌓이고 답장 불가 (`model.rs` UserMessage, 원본 동일).
+- 붙여넣기 시 `\n`만 치환 (`input.rs` paste) — `\r`에서 irc 코덱이 잘라 서버엔 첫 줄만,
+  로컬 에코는 전체 표시.
+- `is_shutting_down`이 Terminated를 막지 않음 (`manager.rs`) — 종료 후 `add_server` 시
+  drain된 빈 맵으로 config.json 덮어쓰기 가능(이론상).
+- ChannelJoinModal도 실패 시 피드백 없이 닫힘(미연결 서버) — ServerModal 항목과 동일 계열.
+- Phase 3 잔여 그대로: render 내 `window.focus()` (`chat_app.rs`), `impl UiApi` 통째
+  `#[allow(dead_code)]`, 모달/InputBar의 미사용 `api` 필드.
+- ChatApp이 자식 뷰를 observe → 매번 트리 전체 재렌더 (`chat_app.rs`).
+- 문서: Phase 2 예제 코드 `application().run(|cx| {` 중복, 오타("배파", "민감 민감", "ox련").
+
 ### Phase 5 — 잔여 항목 및 정리
 
 - **트레이 구현** (별도 이슈): zed 프레임워크는 미제공 — `tray-icon`/`ksni` 별도 스레드.

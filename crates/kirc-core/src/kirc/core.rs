@@ -10,7 +10,9 @@ use irc::client::prelude::*;
 use irc::client::ClientStream;
 use irc::error;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::time::timeout;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 /// IRC 서버 하나당 하나의 Actor. 연결 생명주기와 메시지 처리를 소유한다.
@@ -131,6 +133,10 @@ impl ServerActor {
                             if let Err(e) = client.send_quit("bye") {
                                 error!("Failed to send quit message: {e}");
                             }
+                            // irc crate는 소켓 쓰기(Outgoing)를 ClientStream::poll_next 안에서만
+                            // 구동하므로, 바로 반환해 stream을 drop하면 QUIT가 flush되지 않는다.
+                            // 서버가 QUIT에 응답해 연결을 닫을 때까지 stream을 계속 poll한다.
+                            drain_after_quit(&mut stream).await;
                             return SessionOutcome::Quit
                         }
                         Some(cmd) => self.handle_server_command(&client, cmd),
@@ -312,6 +318,30 @@ enum SessionOutcome {
     Closed,
 }
 
+/// QUIT 전송 후 서버가 연결을 닫을 때까지 대기하는 최대 시간.
+/// `ServerRuntime::graceful_shutdown`의 액터 종료 대기(5s)보다 짧아야 한다.
+const QUIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// QUIT 전송 후 stream을 poll해 큐잉된 QUIT를 실제로 소켓에 쓰고,
+/// 서버가 연결을 닫을 때(None/Err)까지 남은 메시지를 버린다.
+async fn drain_after_quit(stream: &mut ClientStream) {
+    let drain = async {
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(message) => trace!(command = ?message.command, "Discard message after QUIT"),
+                Err(_) => break,
+            }
+        }
+    };
+
+    if timeout(QUIT_DRAIN_TIMEOUT, drain).await.is_err() {
+        warn!(
+            event = "quit_drain_timeout",
+            "Server did not close connection after QUIT"
+        );
+    }
+}
+
 /// 서버에서 클라이언트로 보낸 CTCP 메세지 핸들링
 fn handle_ctcp(client: &Client, source_nickname: &str, ctcp: CtcpCommand) {
     if let Some(reply) = get_ctcp_reply(&ctcp) {
@@ -366,5 +396,95 @@ mod tests {
     fn test_get_ctcp_reply_unknown() {
         let reply = get_ctcp_reply(&CtcpCommand::Unknown("FOO".to_string()));
         assert_eq!(reply, None);
+    }
+}
+
+#[cfg(test)]
+mod quit_tests {
+    use super::*;
+    use crate::kirc::event::UiEvent;
+    use crate::kirc::manager::KircManager;
+    use crate::kirc::persistence::ServerStateSnapshot;
+    use crate::kirc::state::kirc::KircState;
+    use crate::kirc::types::server::ServerConfig;
+    use std::collections::HashMap;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    /// 001(RPL_WELCOME)로 등록을 끝내 주고, QUIT 수신 여부를 반환하는 mock IRC 서버.
+    async fn spawn_mock_server() -> (u16, tokio::task::JoinHandle<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handle = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            let mut lines = BufReader::new(read).lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.starts_with("QUIT") {
+                    // 실제 서버처럼 QUIT에 응답하고 연결을 닫는다
+                    let _ = write.write_all(b"ERROR :Closing link\r\n").await;
+                    return true;
+                }
+                if line.starts_with("USER") {
+                    let _ = write.write_all(b":mock 001 nick :Welcome\r\n").await;
+                }
+            }
+            false
+        });
+
+        (port, handle)
+    }
+
+    async fn wait_for_status(
+        rx: &mut UnboundedReceiver<UiEvent>,
+        server_id: ServerId,
+        status: ServerStatus,
+    ) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::ServerStatus(p))
+                        if p.server_id == server_id && p.status == status =>
+                    {
+                        return;
+                    }
+                    Some(_) => continue,
+                    None => panic!("event channel closed while waiting for {status:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {status:?}"));
+    }
+
+    /// disconnect 시 QUIT가 실제로 소켓까지 flush되는지 (mock IRC 서버로 검증)
+    #[tokio::test]
+    async fn quit_is_flushed_to_server_on_disconnect() {
+        let (port, mock) = spawn_mock_server().await;
+
+        let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
+        let state = Arc::new(KircState::from_iter([ServerStateSnapshot::new(
+            config.clone(),
+            HashMap::new(),
+        )]));
+        let server_id = *state.get_all_servers().keys().next().unwrap();
+
+        let (tx, mut rx) = unbounded_channel::<UiEvent>();
+        let manager = KircManager::new(state.clone(), Arc::new(tx));
+
+        manager.connect_server(Some(server_id), config).unwrap();
+        wait_for_status(&mut rx, server_id, ServerStatus::Connected).await;
+
+        manager.disconnect_server(server_id).unwrap();
+
+        let got_quit = timeout(Duration::from_secs(5), mock)
+            .await
+            .expect("mock server timed out")
+            .unwrap();
+        assert!(got_quit, "QUIT was never written to the socket");
+
+        wait_for_status(&mut rx, server_id, ServerStatus::Disconnected).await;
     }
 }
