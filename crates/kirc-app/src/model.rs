@@ -685,6 +685,27 @@ impl IrcModel {
             .and_then(|id| self.messages.get(id))
     }
 
+    /// 메시지 뷰에 표시할 목록: 채널이 선택돼 있으면 채널 메시지, 서버만 선택돼 있으면
+    /// 서버 버퍼(연결 알림, IRC ERROR, 연결 실패 사유 등 `server_messages`).
+    pub fn visible_messages(&self) -> Option<&[ChatMessage]> {
+        if self.current_channel_id.is_some() {
+            self.current_messages().map(Vec::as_slice)
+        } else {
+            self.current_server()
+                .map(|server| server.server_messages.as_slice())
+        }
+    }
+
+    /// `visible_messages`가 가리키는 버퍼의 식별자 (MessageView의 버퍼 전환 감지용).
+    /// 채널은 복합 채널 ID, 서버 버퍼는 `server:{id}` — 서로 겹치지 않는다.
+    pub fn visible_buffer_key(&self) -> Option<String> {
+        match (&self.current_channel_id, &self.current_server_id) {
+            (Some(channel_id), _) => Some(channel_id.clone()),
+            (None, Some(server_id)) => Some(format!("server:{server_id}")),
+            (None, None) => None,
+        }
+    }
+
     pub fn is_locked(&self) -> bool {
         self.current_channel().map(|c| c.locked).unwrap_or(false)
     }

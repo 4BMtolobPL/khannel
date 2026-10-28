@@ -146,14 +146,15 @@ impl MessageView {
     }
 
     /// 렌더 직전에 ListState를 모델과 동기화한다 (ListState만 갱신, 모델은 수정하지 않음).
-    /// - 채널 전환: reset + 마지막 읽은 위치(또는 맨 아래)로 스크롤 복원
+    /// 표시 버퍼는 채널 또는 (채널 미선택 시) 서버 버퍼다 — `IrcModel::visible_messages`.
+    /// - 버퍼 전환: reset + 마지막 읽은 위치(또는 맨 아래)로 스크롤 복원
     /// - 메시지 추가: splice로 항목 수 반영 (Tail following은 유지)
     fn sync_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let channel_id = self.model.read(cx).current_channel_id().map(str::to_string);
+        let channel_id = self.model.read(cx).visible_buffer_key();
         let count = self
             .model
             .read(cx)
-            .current_messages()
+            .visible_messages()
             .map(|messages| messages.len())
             .unwrap_or(0);
 
@@ -173,7 +174,7 @@ impl MessageView {
                         let model = self.model.read(cx);
                         let own_nickname = model.current_server().map(|s| s.nickname.as_str());
                         self.divider_before = model
-                            .current_messages()
+                            .visible_messages()
                             .and_then(|messages| unread_from(messages, prev_count, own_nickname));
                     }
                     // splice의 두 번째 인자는 "새로 끼워 넣을 항목 수"다.
@@ -325,7 +326,7 @@ impl Render for MessageView {
                 // 메시지 목록을 clone하지 않고, 가상화된 list가 실제로 그리는 항목만
                 // 모델에서 직접 읽는다 (이전: 렌더마다 Vec 전체 clone → 메시지당 O(n)).
                 list(self.list_state.clone(), move |index, _window, cx| {
-                    let Some(messages) = model_for_items.read(cx).current_messages() else {
+                    let Some(messages) = model_for_items.read(cx).visible_messages() else {
                         return div().into_any();
                     };
                     let Some(message) = messages.get(index) else {

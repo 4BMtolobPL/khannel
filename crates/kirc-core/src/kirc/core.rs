@@ -57,9 +57,19 @@ impl ServerActor {
         // 4. 세션 종료. 추후 재연결 구현 시 Closed 분기가 재시도 진입점이 된다.
         match &outcome {
             SessionOutcome::Failed(reason) => self.fail(reason.clone()),
-            SessionOutcome::Quit | SessionOutcome::Closed => {
+            SessionOutcome::Quit => {
                 self.server.transition_to_disconnected();
                 emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
+            }
+            SessionOutcome::Closed => {
+                self.server.transition_to_disconnected();
+                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
+                // 사용자가 끊은 것이 아닌 연결 단절 — 서버 버퍼에 알림
+                emit_system_message(
+                    &self.ui_sink,
+                    self.server_id,
+                    "서버와의 연결이 끊어졌습니다.",
+                );
             }
         }
 
@@ -315,6 +325,12 @@ impl ServerActor {
     fn fail(&self, message: String) {
         error!(server_id = %self.server_id, message = %message, "Server actor failed");
 
+        // 실패 사유를 서버 버퍼에도 남긴다 (Failed 상태의 last_error와 동일 문구)
+        emit_system_message(
+            &self.ui_sink,
+            self.server_id,
+            &format!("연결 실패: {message}"),
+        );
         self.server.transition_to_failed(message);
         emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Failed);
     }
@@ -533,6 +549,26 @@ mod quit_tests {
         let manager = KircManager::new(state.clone(), Arc::new(tx));
 
         manager.connect_server(Some(server_id), config).unwrap();
+
+        // 실패 사유는 Failed 상태 직전에 서버 버퍼용 SystemMessage로도 전달된다
+        let reason_message = timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::SystemMessage(p)) if p.server_id == server_id => {
+                        return p.message;
+                    }
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no failure system message");
+        assert!(
+            reason_message.starts_with("연결 실패: "),
+            "{reason_message}"
+        );
+        assert!(reason_message.contains("'nick'"), "{reason_message}");
         wait_for_status(&mut rx, server_id, ServerStatus::Failed).await;
 
         let error = server.last_error().expect("failure reason missing");

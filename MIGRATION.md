@@ -386,7 +386,7 @@ Tauri 버전과 나란히 실행해 다음을 검증:
      `core::quit_tests::nick_in_use_during_registration_fails_server`(mock 서버가 NICK에 433 응답)는
      수정 전 Registering 정지로 타임아웃, 수정 후 통과.
    - 잔여: UI는 Failed를 Disconnected와 같은 회색 점으로 표시하고 `last_error`를 어디에도
-     보여주지 않는다 → 사유 표시는 10번(서버 메시지 미표시)과 함께 처리.
+     보여주지 않는다 → 사유 표시는 10번(서버 메시지 미표시)과 함께 처리. → **10번에서 해결**(서버 버퍼).
 5. **사이드바 서버/채널 순서 무작위** (`sidebar.rs` — `HashMap::values()` 순회).
    SvelteMap은 삽입 순서 유지 → 패리티 회귀. 수정: `IndexMap` 또는 정렬.
    - **해결 (2026-10-28, 사용자 결정: 삽입 순서 대신 이름순 정렬)**: `IrcModel::sorted_servers`
@@ -448,6 +448,13 @@ Tauri 버전과 나란히 실행해 다음을 검증:
      단위 테스트 4건(`ui::input::tests`). 모달 입력창에도 동일 적용. GUI 동작 수동 확인 완료.
 10. **서버 메시지 미표시** (`model.rs` `add_server_message`) — `server_messages`를 렌더하는
     곳이 없어 "서버에 연결되었습니다."/IRC `ERROR`가 보이지 않는다(Svelte 동일, 4번의 근본 원인).
+    - **수정 (2026-10-28, 사용자 결정: 서버 버퍼)**: 서버만 선택하고 채널을 고르지 않았을 때
+      MessageView가 그 서버의 `server_messages`를 표시(`IrcModel::visible_messages`/
+      `visible_buffer_key` — 서버 버퍼 키는 `server:{id}`라 채널 복합 ID와 겹치지 않음).
+      코어 `fail()`은 실패 사유를 `"연결 실패: {사유}"` SystemMessage로도 보내고, 예기치 않은
+      연결 단절(`SessionOutcome::Closed`)은 "서버와의 연결이 끊어졌습니다." 알림을 남긴다.
+      서버 버퍼에는 unread divider/lastRead가 없다. nick 테스트에 사유 SystemMessage 검증 추가.
+      GUI 동작 수동 확인 완료.
 11. **ChangeNickModal 즉시 닫힘 가능** (`model.rs` Nick 분기, `change_nick_modal.rs` `open_for`) —
     모달 밖에서 생긴 자기 닉 변경도 `nick_success`에 쌓이고, `open_for`가 지우지 않아
     모달을 연 직후 첫 notify에 닫힌다.
