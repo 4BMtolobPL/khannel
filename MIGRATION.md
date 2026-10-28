@@ -688,6 +688,15 @@ Tauri 버전과 나란히 실행해 다음을 검증:
     - `.copr/Makefile`: COPR make_srpm용 — 도구 설치 후 `make-srpm.sh $(outdir)`.
     - 검증: 로컬 `rpmbuild --rebuild --nodeps`(rustup 툴체인) 성공, `%check` 통과(테스트 59개).
       사용자가 `mock -r fedora-44-x86_64 --rebuild`로 깨끗한 chroot 빌드 성공 확인(BuildRequires 충분).
+  - **P5 릴리스 CI (2026-10-29)** — `.github/workflows/release.yml`:
+    - `v*` 태그 push → ① 태그 = `[workspace.package]` version 확인(`cargo pkgid`는 git 의존성을 받아야 해서 Cargo.toml에서 직접 읽음)
+      ② macOS(`macos-latest`, Apple Silicon): cargo-packager 0.11.8 설치 → `dist/macos/package.sh` → dmg
+      ③ Fedora(`fedora:44` 컨테이너): `dnf builddep`(dnf5는 `dnf5-command(builddep)`) → `make-srpm.sh` → `rpmbuild --rebuild` → SRPM + x86_64 RPM
+      ④ 세 파일을 GitHub Release **초안**으로(`--generate-notes`). 게시는 사용자가 웹에서 — 게시 이벤트를 P4 Cask 갱신에 쓴다.
+    - `workflow_dispatch`: 빌드와 아티팩트 업로드만(릴리스 없음) — 태그 전 시험용. 워크플로 파일이 기본 브랜치에 있어야 실행 가능.
+    - CI에서는 cargo-packager가 dmg 창 배치(Finder AppleScript)를 건너뛴다(`CI` 환경변수). 내용은 같다.
+    - 검증: 로컬에서 BuildRequires가 Fedora 44 저장소에서 모두 풀리는 것 확인. 워크플로 실행 자체는 아직 미검증
+      (컨테이너 실행 권한 없음, 태그/병합 전).
 
 ---
 

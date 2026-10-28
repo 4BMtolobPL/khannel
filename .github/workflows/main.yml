@@ -1,8 +1,7 @@
 name: 'ci'
 
 # push/PR마다 대상 OS(Linux, macOS)에서 빌드·테스트·clippy를 돌린다.
-# 릴리스 패키징(.app/.dmg, AppImage 등)은 방식이 정해질 때까지 보류 — 이전 Tauri 릴리스
-# 워크플로(tauri-action)는 Tauri 제거와 함께 삭제했다.
+# 릴리스 패키징(macOS dmg, Fedora RPM)은 release.yml이 `v*` 태그에서 한다.
 
 on:
   push:
