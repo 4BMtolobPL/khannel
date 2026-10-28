@@ -409,8 +409,36 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 7. **채널 전환 시 스크롤 복원이 자동 스크롤을 멈춤** (`message_view.rs` `sync_list`).
    lastRead == 마지막 메시지(흔한 경우)여도 `pause_following_tail()` → 수동으로 맨 아래로
    내리기 전까지 새 메시지를 따라가지 않는다. 마지막 index면 Tail 유지.
+   - **오판 — 수정 불필요 (2026-10-28)**: gpui(6b985a8) `ListState`는 Tail 모드에서 following이
+     멈춰 있어도 레이아웃 시 스크롤이 맨 아래에 닿아 있으면 자동으로 following을 재개한다
+     (`elements/list.rs` "check whether the current scroll position has returned to the bottom").
+     lastRead가 마지막(또는 화면 안에 다 들어오는) 메시지면 `scroll_to` 직후 레이아웃에서 바로
+     재개되고, 아래로 안 읽은 내용이 화면을 넘칠 때만 멈춰 있다(의도된 동작).
 8. **MessageView 렌더 비용 O(n)** (`message_view.rs` render) — 렌더마다 메시지 `Vec` 전체
    clone, `sync_list`가 렌더 중 모델 update. `Arc` 기반 저장/entity 참조로 개선.
+   - **수정 (2026-10-28)**: list 아이템 클로저가 `Entity<IrcModel>`로 해당 index 메시지만 읽는다
+     (Vec clone 제거). lastRead 갱신(`mark_read_if_following`)은 렌더에서 빼서
+     ① 모델 observer(새 메시지 등) ② 채널 전환 렌더 후 `cx.on_next_frame`(레이아웃에서 following
+     재개 여부 확정 후) ③ 기존 스크롤 핸들러에서 수행. 채널 전환 직후 observer는 ListState가 아직
+     이전 채널 기준으로 following이라 새 채널 lastRead를 덮어쓸 수 있으므로, 마지막 렌더 채널과
+     현재 채널이 같을 때만 갱신한다. GUI 동작 수동 확인 완료
+     (새 메시지 자동 스크롤, 채널 전환 시 Last read divider 위치, 보고 나간 채널 복귀 시 divider 없음).
+   - **divider 개선 (2026-10-28, 사용자 요청)**:
+     - 실시간 lastRead 추종 → **채널 진입 시점 위치 고정**(`divider_before`, 방문 동안 유지).
+       실시간 방식은 미확인 메시지가 화면 안에 다 들어오면 진입 직후 레이아웃에서 following이
+       재개 → lastRead 갱신 → divider가 즉시 사라져, 화면을 넘칠 만큼 와야만 보였다.
+     - 위치 규칙 `first_unread_index`: lastRead 다음(없으면 처음)부터를 미확인으로 보고, 그 구간에
+       유저 메시지가 있을 때만 표시(unread 배지와 같은 기준). divider는 첫 미확인 메시지 **위**에 그리고,
+       스크롤은 그 직전 메시지를 맨 위로 복원. 단위 테스트 4건(`ui::message_view::tests`).
+     - 스타일: `--------Last read--------` 텍스트 → 메시지 영역 너비 전체의 실선 2개 + 가운데
+       "Last read" 라벨(accent 색, 좌우 4px 여백).
+     - **실시간 divider (사용자 요청)**: 채널을 보는 중 위로 스크롤해 둔 상태(following 아님)에서
+       새 메시지가 오면, 이번 방문에 divider가 없을 때만 새로 들어온 첫 메시지 위에 생성
+       (`unread_from`). 맨 아래에서 따라가는 중이면 즉시 읽은 것으로 보아 만들지 않는다.
+       내가 보낸 메시지(에코)는 진입 시/실시간 모두 미확인으로 치지 않는다. 단위 테스트 2건 추가.
+     - **함께 발견·수정**: `ListState::splice(range, count)`의 `count`는 "새로 끼워 넣을 항목 수"인데
+       전체 메시지 수를 넘기고 있었다 → 메시지 1개마다 list 항목이 전체 개수만큼 불어남(빈 index는
+       높이 0의 빈 div라 화면엔 안 보였지만 항목 수가 O(n²)으로 증가). `count - prev_count`로 수정.
 9. **긴 입력이 Send 버튼 위로 넘침** (`input.rs` prepaint, `input_bar.rs` 입력 상자) —
    TextInput에 가로 스크롤/clip 없음, 커서가 화면 밖으로 나감.
 10. **서버 메시지 미표시** (`model.rs` `add_server_message`) — `server_messages`를 렌더하는
