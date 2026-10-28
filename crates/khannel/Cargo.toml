@@ -30,3 +30,20 @@ uuid.workspace = true
 tracing = { workspace = true }
 directories = "6"
 unicode-segmentation = "1"
+
+# macOS .app/.dmg 패키징 (cargo-packager). 경로는 이 파일 기준. 보통 `dist/macos/package.sh`로 실행한다
+# (dmg 이름 정리 + 공증까지). 서명은 cargo-packager가 아니라 dmg를 만들기 직전 훅(`sign-app.sh`)에서 한다 —
+# cargo-packager는 ad-hoc 서명(`-`)에도 `--timestamp`/hardened runtime을 붙이고 식별자를 환경변수로 바꿀 수 없다.
+[package.metadata.packager]
+product-name = "khannel"
+identifier = "com.kimtalmo.khannel"
+category = "SocialNetworking"
+copyright = "Copyright © 2026 Talmo Kim"
+license-file = "../../LICENSE"
+icons = ["../../dist/macos/icons/*.png"]
+formats = ["app", "dmg"]
+before-packaging-command = "cargo build --release --locked -p khannel"
+before-each-package-command = "../../dist/macos/sign-app.sh"
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"

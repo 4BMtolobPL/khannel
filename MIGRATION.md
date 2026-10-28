@@ -655,8 +655,24 @@ Tauri 버전과 나란히 실행해 다음을 검증:
     5. **P4 Homebrew Cask**: `4BMtolobPL/homebrew-tap`의 `Casks/khannel.rb` + 릴리스 게시 시 자동 갱신
        (fine-grained PAT `HOMEBREW_TAP_TOKEN` 필요 — 그때 생성 안내).
     6. **P6 문서**: README 설치 안내(`brew install --cask`, Gatekeeper "그래도 열기", `dnf copr enable`).
-    - 태그 직전: metainfo `<release date>`를 실제 날짜로, 의존성이 바뀌었으면 `THIRD_PARTY_NOTICES.md` 재생성. (GitHub 저장소 설명 —
-  사용자가 직접 변경)
+    - 태그 직전: metainfo `<release date>`를 실제 날짜로, 의존성이 바뀌었으면 `THIRD_PARTY_NOTICES.md` 재생성.
+  - **P1 macOS .app/.dmg (2026-10-29)**:
+    - cargo-packager 설정은 `crates/khannel/Cargo.toml`의 `[package.metadata.packager]`(이름·버전·설명을 크레이트에서
+      상속): `khannel.app`(번들 ID `com.kimtalmo.khannel`, 카테고리 social-networking, 최소 macOS 11.0) + dmg.
+      `before-packaging-command`가 `cargo build --release --locked -p khannel`을 돌린다.
+    - 실행은 `dist/macos/package.sh` — Apple Silicon 확인 → `cargo packager --release -p khannel` →
+      dmg 이름을 `khannel_<버전>_aarch64.dmg`(cargo-packager 고정)에서 `khannel-<버전>-macos-arm64.dmg`로 변경.
+    - **서명은 cargo-packager에 맡기지 않는다**: `signing-identity = "-"`를 주면 ad-hoc에도 `--timestamp`와 hardened
+      runtime을 붙이고, 식별자를 환경변수로 바꿀 수도 없다. 대신 `before-each-package-command` 훅
+      `dist/macos/sign-app.sh`가 dmg 포맷 직전(= .app 완성 후, dmg에 담기 전)에 `.app`을 서명한다 — 기본 ad-hoc(`-`),
+      `APPLE_SIGNING_IDENTITY`가 있으면 Developer ID + hardened runtime + timestamp. 공증은 `package.sh`가 dmg를 서명한 뒤
+      `APPLE_KEYCHAIN_PROFILE` 또는 `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`가 있을 때만 `notarytool` + `stapler`(지금은 비활성).
+    - 아이콘: `dist/macos/icon-1024.png` 하나 → `dist/macos/icons/icon_<N>x<N>[@2x].png` iconset(16~1024).
+      cargo-packager의 icns 변환은 1024px를 밀도 1로는 받지 않고(`@2x` 접미사로 레티나 판별) **16비트 PNG를 거부**한다 —
+      ImageMagick 그림자 합성 결과가 16비트였어서 `PNG32:` + `-depth 8`로 고정.
+    - Linux에서 `--formats app`으로 번들 구조·Info.plist·icns(13개 타입) 확인. dmg/서명/실행은 macOS에서 확인 필요:
+      터미널 창이 뜨지 않음, Dock 아이콘, 메뉴바 앱 이름, 데이터 경로(`~/Library/Application Support/com.kimtalmo.khannel`),
+      `codesign -dv`(Signature=adhoc), dmg를 받은 것처럼 격리 속성을 붙였을 때 "그래도 열기" 흐름.
 
 ---
 

@@ -182,7 +182,10 @@ debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다.
 
 - `app-icon.png` — 아이콘 원본 (1536px). `dist/generate-icons.sh`로 아래 아이콘을 다시 만든다 (ImageMagick 필요).
 - `linux/` — 데스크톱 항목(`com.kimtalmo.khannel.desktop`), AppStream metainfo, hicolor 아이콘(32~512px)
-- `macos/icon-1024.png` — macOS 아이콘 그리드에 맞춰 여백과 옅은 그림자를 둔 1024px 아이콘 (패키징 시 `.icns`로 변환)
+- `macos/icons/` — macOS 아이콘 그리드에 맞춰 여백과 옅은 그림자를 둔 iconset PNG(16~1024px, 패키징 시 `.icns`로 변환)
+- `macos/package.sh` — Apple Silicon Mac에서 `khannel.app`과 `khannel-<버전>-macos-arm64.dmg`를 만든다
+  (cargo-packager 필요: `cargo install cargo-packager --locked`, 설정은 `crates/khannel/Cargo.toml`의
+  `[package.metadata.packager]`). 기본은 ad-hoc 서명, `macos/sign-app.sh` 참고
 
 ## 라이선스
 
