@@ -85,6 +85,25 @@ fn map_status(status: &kirc_core::kirc::types::ServerStatus) -> UiServerStatus {
     }
 }
 
+/// 사이드바 채널 표시 순서: 채널명 오름차순.
+/// IRC 채널명은 대소문자를 구분하지 않으므로 소문자 기준으로 먼저 비교하고,
+/// 같으면 원래 이름으로 비교해 순서를 결정적으로 만든다.
+fn channel_order(a: &Channel, b: &Channel) -> std::cmp::Ordering {
+    a.name
+        .to_lowercase()
+        .cmp(&b.name.to_lowercase())
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+/// 사이드바 서버 표시 순서: 서버 이름 오름차순(대소문자 무시), 같으면 ID 순.
+fn server_order(a: &Server, b: &Server) -> std::cmp::Ordering {
+    a.name
+        .to_lowercase()
+        .cmp(&b.name.to_lowercase())
+        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
 }
@@ -621,8 +640,22 @@ impl IrcModel {
         &self.servers
     }
 
-    pub fn channels(&self) -> &HashMap<String, Channel> {
-        &self.channels
+    /// 사이드바 표시 순서(서버 이름순)로 정렬된 서버 목록.
+    pub fn sorted_servers(&self) -> Vec<&Server> {
+        let mut servers: Vec<&Server> = self.servers.values().collect();
+        servers.sort_by(|a, b| server_order(a, b));
+        servers
+    }
+
+    /// 사이드바 표시 순서(채널명순)로 정렬된 특정 서버의 채널 목록.
+    pub fn sorted_channels(&self, server_id: ServerId) -> Vec<&Channel> {
+        let mut channels: Vec<&Channel> = self
+            .channels
+            .values()
+            .filter(|c| c.server_id == server_id)
+            .collect();
+        channels.sort_by(|a, b| channel_order(a, b));
+        channels
     }
 
     pub fn current_server_id(&self) -> Option<&ServerId> {
@@ -757,5 +790,73 @@ impl IrcModel {
             tracing::warn!("change_nickname failed: {}", e);
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel(name: &str) -> Channel {
+        Channel {
+            server_id: uuid::Uuid::nil(),
+            name: name.to_string(),
+            users: BTreeSet::new(),
+            unread: 0,
+            locked: false,
+            last_read_message_id: None,
+            topic: None,
+        }
+    }
+
+    fn server(id: u128, name: &str) -> Server {
+        Server {
+            id: uuid::Uuid::from_u128(id),
+            name: name.to_string(),
+            host: name.to_string(),
+            port: 6697,
+            tls: true,
+            nickname: "nick".to_string(),
+            status: UiServerStatus::Disconnected,
+            server_messages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn channels_sort_by_name_case_insensitive() {
+        let mut channels = [
+            channel("#rust"),
+            channel("#Zed"),
+            channel("#gpui"),
+            channel("#Rust"),
+            channel("#a"),
+        ];
+        channels.sort_by(channel_order);
+        let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["#a", "#gpui", "#Rust", "#rust", "#Zed"]);
+    }
+
+    #[test]
+    fn servers_sort_by_name_then_id() {
+        let mut servers = [
+            server(3, "libera.chat"),
+            server(2, "irc.oftc.net"),
+            server(1, "Libera.chat"),
+            server(4, "irc.oftc.net"),
+        ];
+        servers.sort_by(server_order);
+        let order: Vec<(u128, &str)> = servers
+            .iter()
+            .map(|s| (s.id.as_u128(), s.name.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (2, "irc.oftc.net"),
+                (4, "irc.oftc.net"),
+                (1, "Libera.chat"),
+                (3, "libera.chat"),
+            ]
+        );
     }
 }

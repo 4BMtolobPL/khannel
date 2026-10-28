@@ -12,7 +12,7 @@ use gpui::{
 };
 use kirc_core::kirc::types::ServerId;
 
-use crate::model::{Channel, IrcModel, UiServerStatus};
+use crate::model::{Channel, IrcModel, Server, UiServerStatus};
 use crate::theme::{status_dot_color, Theme};
 
 // ==================================== 이벤트 ====================================
@@ -82,9 +82,15 @@ fn badge(unread: u32, theme: Theme, small: bool) -> gpui::Div {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
-        let servers = self.model.read(cx).servers().clone();
+        // HashMap 순회 순서는 삽입마다 바뀌므로 표시 순서는 정렬된 목록으로 고정한다.
+        let servers: Vec<Server> = self
+            .model
+            .read(cx)
+            .sorted_servers()
+            .into_iter()
+            .cloned()
+            .collect();
         let server_unread = self.model.read(cx).server_unread();
-        let channels = self.model.read(cx).channels().clone();
         let current_server_id = self.model.read(cx).current_server_id().copied();
         let current_channel_id = self
             .model
@@ -113,7 +119,7 @@ impl Render for Sidebar {
                     .flex_col()
                     .gap_y(px(4.)) // space-y-1
                     .px(px(8.))
-                    .children(servers.values().map(|item| {
+                    .children(servers.iter().map(|item| {
                         let is_selected = Some(item.id) == current_server_id;
                         let unread = server_unread.get(&item.id).copied().unwrap_or(0);
                         let server_id = item.id;
@@ -193,7 +199,6 @@ impl Render for Sidebar {
                         if is_selected {
                             row = row.child(self.render_channel_list(
                                 server_id,
-                                &channels,
                                 &current_channel_id,
                                 theme,
                                 cx,
@@ -228,12 +233,17 @@ impl Sidebar {
     fn render_channel_list(
         &self,
         server_id: ServerId,
-        channels: &std::collections::HashMap<String, Channel>,
         current_channel_id: &Option<String>,
         theme: Theme,
         cx: &Context<Self>,
     ) -> gpui::Div {
         let model = self.model.clone();
+        let channels: Vec<Channel> = model
+            .read(cx)
+            .sorted_channels(server_id)
+            .into_iter()
+            .cloned()
+            .collect();
 
         let list = div()
             .flex()
@@ -242,65 +252,60 @@ impl Sidebar {
             .ml(px(16.))
             .mt(px(4.))
             .text_sm()
-            .children(
-                channels
-                    .values()
-                    .filter(|c| c.server_id == server_id)
-                    .map(|item| {
-                        // 리스너 클로저는 'static이므로 참조 대신 값을 복사해 둔다.
-                        let item_server_id = item.server_id;
-                        let channel_name = item.name.clone();
-                        let unread = item.unread;
-                        // ircStore와 동일하게 current_channel_id는 복합 ID("serverId:channel")
-                        let channel_id = model
-                            .read(cx)
-                            .get_channel_id(&item_server_id, &channel_name);
-                        let is_selected = current_channel_id.as_ref() == Some(&channel_id);
-                        // move 클로저가 channel_name을 소비하지 않도록 리스너용 복제본을 둔다.
-                        let listener_channel_name = channel_name.clone();
+            .children(channels.iter().map(|item| {
+                // 리스너 클로저는 'static이므로 참조 대신 값을 복사해 둔다.
+                let item_server_id = item.server_id;
+                let channel_name = item.name.clone();
+                let unread = item.unread;
+                // ircStore와 동일하게 current_channel_id는 복합 ID("serverId:channel")
+                let channel_id = model
+                    .read(cx)
+                    .get_channel_id(&item_server_id, &channel_name);
+                let is_selected = current_channel_id.as_ref() == Some(&channel_id);
+                // move 클로저가 channel_name을 소비하지 않도록 리스너용 복제본을 둔다.
+                let listener_channel_name = channel_name.clone();
 
+                div()
+                    .id(channel_id.clone())
+                    .w_full()
+                    .rounded(px(4.))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .cursor_pointer()
+                    .when(is_selected, |d| d.bg(theme.selected_channel))
+                    .when(!is_selected, |d| d.hover(|h| h.bg(theme.hover)))
+                    .on_click({
+                        let model = model.clone();
+                        let channel_id = channel_id.clone();
+                        move |_, _, cx| {
+                            model.update(cx, |m, cx| {
+                                m.set_current_channel(Some(channel_id.clone()), cx)
+                            });
+                        }
+                    })
+                    // 채널 우클릭: 서버 row로의 이벤트 버블링을 막아
+                    // 두 메뉴가 동시에 뜨는 Svelte 버그를 방지한다.
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |_, event: &MouseDownEvent, _, cx| {
+                            cx.emit(SidebarEvent::ChannelContextMenu {
+                                server_id: item_server_id,
+                                channel_id: channel_id.clone(),
+                                channel_name: listener_channel_name.clone(),
+                                position: event.position,
+                            });
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
                         div()
-                            .id(channel_id.clone())
-                            .w_full()
-                            .rounded(px(4.))
-                            .px(px(8.))
-                            .py(px(4.))
-                            .cursor_pointer()
-                            .when(is_selected, |d| d.bg(theme.selected_channel))
-                            .when(!is_selected, |d| d.hover(|h| h.bg(theme.hover)))
-                            .on_click({
-                                let model = model.clone();
-                                let channel_id = channel_id.clone();
-                                move |_, _, cx| {
-                                    model.update(cx, |m, cx| {
-                                        m.set_current_channel(Some(channel_id.clone()), cx)
-                                    });
-                                }
-                            })
-                            // 채널 우클릭: 서버 row로의 이벤트 버블링을 막아
-                            // 두 메뉴가 동시에 뜨는 Svelte 버그를 방지한다.
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |_, event: &MouseDownEvent, _, cx| {
-                                    cx.emit(SidebarEvent::ChannelContextMenu {
-                                        server_id: item_server_id,
-                                        channel_id: channel_id.clone(),
-                                        channel_name: listener_channel_name.clone(),
-                                        position: event.position,
-                                    });
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_x(px(4.))
-                                    .child(channel_name.clone())
-                                    .when(unread > 0, |d| d.child(badge(unread, theme, true))),
-                            )
-                    }),
-            );
+                            .flex()
+                            .items_center()
+                            .gap_x(px(4.))
+                            .child(channel_name.clone())
+                            .when(unread > 0, |d| d.child(badge(unread, theme, true))),
+                    )
+            }));
 
         // + 채널 추가 (Svelte: 채널 리스트 마지막 항목)
         list.child(

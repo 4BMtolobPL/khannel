@@ -389,6 +389,11 @@ Tauri 버전과 나란히 실행해 다음을 검증:
      보여주지 않는다 → 사유 표시는 10번(서버 메시지 미표시)과 함께 처리.
 5. **사이드바 서버/채널 순서 무작위** (`sidebar.rs` — `HashMap::values()` 순회).
    SvelteMap은 삽입 순서 유지 → 패리티 회귀. 수정: `IndexMap` 또는 정렬.
+   - **해결 (2026-10-28, 사용자 결정: 삽입 순서 대신 이름순 정렬)**: `IrcModel::sorted_servers`
+     (서버 이름 → ID), `sorted_channels(server_id)`(채널명). 모두 대소문자 무시 비교 후 원래
+     이름으로 tie-break(IRC 채널명은 대소문자 무시). 사이드바는 렌더 시 정렬 목록을 사용하고,
+     전체 채널 맵 clone 대신 현재 서버 채널만 clone한다. 미사용이 된 `IrcModel::channels()` 제거.
+     정렬 규칙 단위 테스트 2건(`model::tests`).
 
 **중간**
 
