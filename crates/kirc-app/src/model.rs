@@ -108,6 +108,54 @@ fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
 }
 
+// ==================================== 닉변 요청 추적 ====================================
+
+/// 닉네임 변경 요청 ↔ 성공 매칭.
+///
+/// 내 닉 변경 이벤트(NICK)는 서비스의 강제 변경(예: NickServ → Guest1234) 등 요청과 무관하게도
+/// 온다. 요청한 닉으로 실제 바뀌었을 때만 성공으로 기록해, 닉변 모달이 엉뚱한 이벤트에
+/// 닫히지 않게 한다. (이전: 모든 내 닉 변경을 성공으로 쌓고 모달을 열 때도 지우지 않아, 남은
+/// 기록 때문에 모달이 열린 직후 첫 모델 변경에 닫혔다.)
+#[derive(Default)]
+struct NickChangeTracker {
+    /// 서버별 요청 중인 새 닉
+    pending: HashMap<ServerId, String>,
+    /// 서버별 요청이 반영된 닉 (모달이 꺼내 가면 제거)
+    succeeded: HashMap<ServerId, String>,
+}
+
+impl NickChangeTracker {
+    fn request(&mut self, server_id: ServerId, new_nick: &str) {
+        self.pending.insert(server_id, new_nick.to_string());
+        self.succeeded.remove(&server_id);
+    }
+
+    fn on_own_nick_changed(&mut self, server_id: ServerId, new_nick: &str) {
+        // IRC 닉은 대소문자를 구분하지 않는다
+        let requested = self
+            .pending
+            .get(&server_id)
+            .is_some_and(|pending| pending.eq_ignore_ascii_case(new_nick));
+        if requested {
+            self.pending.remove(&server_id);
+            self.succeeded.insert(server_id, new_nick.to_string());
+        }
+    }
+
+    fn on_failed(&mut self, server_id: ServerId) {
+        self.pending.remove(&server_id);
+    }
+
+    fn take_success(&mut self, server_id: ServerId) -> Option<String> {
+        self.succeeded.remove(&server_id)
+    }
+
+    fn reset(&mut self, server_id: ServerId) {
+        self.pending.remove(&server_id);
+        self.succeeded.remove(&server_id);
+    }
+}
+
 // ==================================== IrcModel ====================================
 
 pub struct IrcModel {
@@ -117,8 +165,8 @@ pub struct IrcModel {
     current_server_id: Option<ServerId>,
     current_channel_id: Option<String>,
     nick_errors: HashMap<ServerId, String>,
-    // 닉네임 변경 성공 캐시 — 닉변 모달의 성공 자동 닫힘 용도.
-    nick_success: HashMap<ServerId, String>,
+    // 닉네임 변경 요청 ↔ 성공 매칭 — 닉변 모달의 성공 자동 닫힘 용도.
+    nick_change: NickChangeTracker,
     api: Arc<UiApi>,
 }
 
@@ -131,7 +179,7 @@ impl IrcModel {
             current_server_id: None,
             current_channel_id: None,
             nick_errors: HashMap::new(),
-            nick_success: HashMap::new(),
+            nick_change: NickChangeTracker::default(),
             api: api.clone(),
         };
 
@@ -234,6 +282,7 @@ impl IrcModel {
     }
 
     fn on_change_nick_failed(&mut self, p: ChangeNickFailedPayload) {
+        self.nick_change.on_failed(p.server_id);
         self.nick_errors.insert(p.server_id, p.reason);
     }
 
@@ -372,7 +421,8 @@ impl IrcModel {
                 if let Some(server) = self.servers.get_mut(&server_id) {
                     if server.nickname == old_nick {
                         server.nickname = new_nick.clone();
-                        self.nick_success.insert(server_id, new_nick.clone());
+                        // 모달로 요청한 변경일 때만 성공 처리 (강제 변경 등은 무시)
+                        self.nick_change.on_own_nick_changed(server_id, &new_nick);
                     }
                 }
                 let targets: Vec<String> = self
@@ -611,7 +661,12 @@ impl IrcModel {
 
     /// 닉변 성공 캐시를 꺼낸다 (ChangeNickModal 성공 자동 닫힘 — Svelte nickSuccess 대응).
     pub fn take_nick_success(&mut self, server_id: &ServerId) -> Option<String> {
-        self.nick_success.remove(server_id)
+        self.nick_change.take_success(*server_id)
+    }
+
+    /// 닉변 요청/성공 기록 초기화 (모달 열 때 — 이전에 남은 성공 기록으로 즉시 닫히지 않게).
+    pub fn reset_nick_change(&mut self, server_id: &ServerId) {
+        self.nick_change.reset(*server_id);
     }
 
     // ========================= State Mutation (UI 액션) =========================
@@ -807,8 +862,9 @@ impl IrcModel {
     pub fn change_nickname(&mut self, server_id: ServerId, new_nick: &str, cx: &mut Context<Self>) {
         let payload =
             kirc_core::kirc::commands::ChangeNickPayload::new(server_id, new_nick.to_string());
-        if let Err(e) = self.api.change_nickname(&payload) {
-            tracing::warn!("change_nickname failed: {}", e);
+        match self.api.change_nickname(&payload) {
+            Ok(()) => self.nick_change.request(server_id, new_nick),
+            Err(e) => tracing::warn!("change_nickname failed: {}", e),
         }
         cx.notify();
     }
@@ -841,6 +897,53 @@ mod tests {
             status: UiServerStatus::Disconnected,
             server_messages: Vec::new(),
         }
+    }
+
+    #[test]
+    fn nick_change_succeeds_only_for_requested_nick() {
+        let server = uuid::Uuid::from_u128(1);
+        let mut tracker = NickChangeTracker::default();
+
+        // 요청 없이 온 강제 변경은 성공이 아니다
+        tracker.on_own_nick_changed(server, "Guest1234");
+        assert_eq!(tracker.take_success(server), None);
+
+        // 요청한 닉으로 바뀌면 성공 (대소문자 무시), 한 번 꺼내면 사라진다
+        tracker.request(server, "kim");
+        tracker.on_own_nick_changed(server, "Kim");
+        assert_eq!(tracker.take_success(server).as_deref(), Some("Kim"));
+        assert_eq!(tracker.take_success(server), None);
+    }
+
+    #[test]
+    fn nick_change_other_nick_or_failure_is_not_success() {
+        let server = uuid::Uuid::from_u128(1);
+        let other = uuid::Uuid::from_u128(2);
+        let mut tracker = NickChangeTracker::default();
+
+        tracker.request(server, "kim");
+        // 다른 닉으로 바뀌거나 다른 서버의 변경은 무시
+        tracker.on_own_nick_changed(server, "Guest1234");
+        tracker.on_own_nick_changed(other, "kim");
+        assert_eq!(tracker.take_success(server), None);
+        assert_eq!(tracker.take_success(other), None);
+
+        // 실패하면 요청이 사라져 이후 같은 닉으로 바뀌어도 성공이 아니다
+        tracker.on_failed(server);
+        tracker.on_own_nick_changed(server, "kim");
+        assert_eq!(tracker.take_success(server), None);
+    }
+
+    #[test]
+    fn nick_change_reset_drops_stale_success() {
+        let server = uuid::Uuid::from_u128(1);
+        let mut tracker = NickChangeTracker::default();
+
+        tracker.request(server, "kim");
+        tracker.on_own_nick_changed(server, "kim");
+        // 모달을 다시 열면(reset) 남아 있던 성공 기록으로 닫히지 않는다
+        tracker.reset(server);
+        assert_eq!(tracker.take_success(server), None);
     }
 
     #[test]

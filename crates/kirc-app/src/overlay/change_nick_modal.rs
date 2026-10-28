@@ -52,6 +52,7 @@ impl ChangeNickModal {
         .detach();
 
         // 성공 감지 → 모달 닫기 (Svelte: $effect에서 nickSuccess 확인)
+        // 모달이 닫혀 있으면 server_id가 None이라 반응하지 않는다.
         cx.observe(&model, |this, model, cx| {
             let server_id = this.server_id;
             if let Some(server_id) = server_id {
@@ -60,6 +61,7 @@ impl ChangeNickModal {
                     .is_some()
                 {
                     this.clear_error(cx);
+                    this.server_id = None;
                     cx.emit(DismissEvent);
                 }
             }
@@ -83,10 +85,13 @@ impl ChangeNickModal {
     ) {
         self.server_id = server_id;
         self.nick.update(cx, |input, cx| input.clear(window, cx));
-        // 이전 실패 에러 제거 (Svelte: 모달 열림/닫힘 effect에서 nickErrors 정리)
+        // 이전 실패 에러 + 요청/성공 기록 제거 (Svelte: 모달 열림/닫힘 effect에서 nickErrors 정리).
+        // 성공 기록이 남아 있으면 열린 직후 첫 모델 변경에 모달이 닫혀 버린다.
         if let Some(server_id) = server_id {
-            self.model
-                .update(cx, |m, cx| m.clear_nick_error(&server_id, cx));
+            self.model.update(cx, |m, cx| {
+                m.clear_nick_error(&server_id, cx);
+                m.reset_nick_change(&server_id);
+            });
         }
         cx.notify();
     }
@@ -121,6 +126,8 @@ impl ChangeNickModal {
 
     fn cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.clear_error(cx);
+        // 닫힌 뒤에는 닉 변경 이벤트에 반응하지 않도록 대상 서버를 해제한다
+        self.server_id = None;
         cx.emit(DismissEvent);
     }
 }

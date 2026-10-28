@@ -458,6 +458,11 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 11. **ChangeNickModal 즉시 닫힘 가능** (`model.rs` Nick 분기, `change_nick_modal.rs` `open_for`) —
     모달 밖에서 생긴 자기 닉 변경도 `nick_success`에 쌓이고, `open_for`가 지우지 않아
     모달을 연 직후 첫 notify에 닫힌다.
+    - **해결 (2026-10-28)**: `NickChangeTracker`(model.rs) — `change_nickname` 성공 시 요청 닉을
+      기록하고, 내 닉 변경 이벤트가 **요청한 닉과 일치할 때만**(대소문자 무시) 성공으로 기록.
+      닉변 실패(`ChangeNickFailed`)는 요청을 지운다. 모달은 `open_for`에서 그 서버의 요청/성공
+      기록을 초기화하고, 닫힐 때(취소/Esc/성공) `server_id`를 해제해 닫힌 상태에서는 반응하지
+      않는다. 단위 테스트 3건(`model::tests::nick_change_*`). GUI 동작 수동 확인 완료.
 
 **낮음 / Svelte 상속 / nit**
 
