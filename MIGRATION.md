@@ -262,7 +262,7 @@ Phase 3 종료 시점 코드 리뷰에서 도출. 단순 실수보다는 "Svelte
   `impl UiApi` 통째 `#[allow(dead_code)]`는 항목별 허용으로 좁히는 것이 좋다.
 - `model.rs` Topic 분기의 `let _ = server;` 불필요 클론 흔적 제거.
 
-### Phase 4 — 수동 패리티 테스트 (진행 중, 2026-10-27)
+### Phase 4 — 수동 패리티 테스트 (완료, 2026-10-28)
 
 Tauri 버전과 나란히 실행해 다음을 검증:
 
@@ -327,6 +327,8 @@ Tauri 버전과 나란히 실행해 다음을 검증:
      를 `Transparent`로 설정.
    - 잠금 버튼 이모지가 중앙 정렬되지 않음 → 버튼 flex 가운데 정렬.
    - macOS IME(한글 입력) 상세 검증은 잔여 — Wayland 스모크 반복으로 대체 중.
+   → **macOS 한글 IME 검증 완료 (2026-10-28, MacBook에서 사용자 확인)**. 전체 코드 리뷰 수정분의
+     수동 확인 항목도 모두 확인 완료.
 
 #### 전체 코드 리뷰 → 잔여 항목 (2026-10-28)
 
@@ -496,14 +498,29 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 - 문서: Phase 2 예제 코드 `application().run(|cx| {` 중복, 오타("배파", "민감 민감", "ox련").
   → **해결**: 예제 중복 줄 제거, "배포"/"민감 영역"/"관련"으로 수정.
 
-### Phase 5 — 잔여 항목 및 정리
+### Phase 5 — 잔여 항목 및 정리 (진행 중, 2026-10-28)
 
-- **트레이 구현** (별도 이슈): zed 프레임워크는 미제공 — `tray-icon`/`ksni` 별도 스레드.
-  존재하지 않는 기능(Show/Quit 메뉴)을 fork에 붙이는 것은 비권장(유지보수 리스크).
-- **네이티브 메뉴**: zed 프레임워크는 macOS 메뉴 지원. Linux는 상황 확인 후 대응.
+- **트레이 구현** (별도 이슈, **대기 — 사용자 결정 2026-10-28**): zed 프레임워크는 미제공 —
+  `tray-icon`/`ksni` 별도 스레드. 존재하지 않는 기능(Show/Quit 메뉴)을 fork에 붙이는 것은
+  비권장(유지보수 리스크). 현재는 창을 닫으면 graceful shutdown 후 종료.
+- **네이티브 메뉴** (**대기**): zed 프레임워크는 macOS 메뉴 지원. Linux는 상황 확인 후 대응.
 - 제거: `src/`, `src-tauri/`, `svelte.config.js`, `vite.config.js`, `tsconfig.json`,
   `deno.lock`, `package.json` (svelte 관련 도구들), README/CI 정합성 수정.
-- 수동: "IRC client built with Tauri" → "IRC client built with GPUI".
+  - **완료 (2026-10-28)**: 위 파일 + `static/`, `.oxfmtrc.json` 삭제. workspace members에서
+    `src-tauri` 제거 → Cargo.lock 약 2,300줄 감소(버전 변경 없음).
+  - 아이콘: 원본 `app-icon.png`(1536px)만 유지, `src-tauri/icons`(Tauri 생성물) 삭제 —
+    트레이/패키징 때 원본에서 재생성 (사용자 결정).
+  - CI: Tauri 릴리스 워크플로(`tauri-action`, release 브랜치 → 설치 파일 배포) →
+    push/PR마다 Ubuntu 24.04 + macOS에서 `fmt --check` / `clippy -D warnings` / `test`
+    (`--locked`) 실행하는 CI로 교체 (사용자 결정). 릴리스 패키징은 방식 결정 전까지 보류.
+  - README: GPUI 기준으로 재작성(기술 스택, 구조, 실행법, Linux 시스템 패키지).
+    데이터 경로 오기(`com.kimtalmo.kirc` → 실제 `com.kimtalmo.kirc-rs`) 수정, Windows 경로 제거.
+  - `.gitignore`: Svelte/Deno 템플릿 항목 제거.
+  - 함께 수정: `cancel_connect`가 코어 상태는 Disconnected로 바꾸면서 UI엔 Failed를 보내던
+    불일치 → 실제 상태를 전송 (Disconnect 메뉴가 연결 취소에 쓰이게 되어 사용자 취소가 "실패"로
+    보였다).
+- 수동: "IRC client built with Tauri" → "IRC client built with GPUI". (GitHub 저장소 설명 —
+  사용자가 직접 변경)
 
 ---
 

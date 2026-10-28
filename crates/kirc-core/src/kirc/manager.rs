@@ -115,8 +115,10 @@ impl KircManager {
 
     pub fn cancel_connect(&self, server_id: ServerId) -> anyhow::Result<()> {
         if let Some(server) = self.kirc_state.get_server(server_id) {
+            // 사용자 취소이므로 실제 전이 결과(Disconnected)를 그대로 알린다
+            // (이전: 상태는 Disconnected인데 UI에는 Failed를 보냈다)
             if server.abort_connecting() {
-                emit_server_status(&self.ui_sink, server_id, ServerStatus::Failed);
+                emit_server_status(&self.ui_sink, server_id, server.status());
             }
             Ok(())
         } else {

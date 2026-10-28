@@ -1,12 +1,8 @@
-# Created by https://www.toptal.com/developers/gitignore/api/git,jetbrains+all,visualstudiocode,rust,deno,svelte
-# Edit at https://www.toptal.com/developers/gitignore?templates=git,jetbrains+all,visualstudiocode,rust,deno,svelte
+# Created by https://www.toptal.com/developers/gitignore/api/git,jetbrains+all,visualstudiocode,rust
+# Edit at https://www.toptal.com/developers/gitignore?templates=git,jetbrains+all,visualstudiocode,rust
 
-### Deno ###
 /.idea/
 /.vscode/
-
-/node_modules
-
 .env
 *.orig
 *.pyc
@@ -130,13 +126,6 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-### Svelte ###
-# gitignore template for the SvelteKit, frontend web component framework
-# website: https://kit.svelte.dev/
-
-.svelte-kit/
-package
-
 ### VisualStudioCode ###
 .vscode/*
 !.vscode/settings.json
@@ -156,6 +145,6 @@ package
 .history
 .ionide
 
-# End of https://www.toptal.com/developers/gitignore/api/git,jetbrains+all,visualstudiocode,rust,deno,svelte
+# End of https://www.toptal.com/developers/gitignore/api/git,jetbrains+all,visualstudiocode,rust
 
 build
