@@ -172,7 +172,9 @@ CI(`.github/workflows/main.yml`)는 push/PR마다 Ubuntu와 macOS에서 fmt/clip
 - macOS(Apple Silicon): `khannel-<버전>-macos-arm64.dmg` (ad-hoc 서명)
 - Fedora: `khannel-<버전>-1.fc44.x86_64.rpm`, SRPM
 
-Actions 탭에서 수동 실행하면 릴리스 없이 빌드만 하고 결과물을 아티팩트로 올립니다.
+초안을 게시하면 `.github/workflows/publish.yml`이 SRPM을 COPR(`is2ogc3tc2/khannel`)에 제출합니다
+(저장소 시크릿 `COPR_CONFIG` 필요).
+release 워크플로를 Actions 탭에서 수동 실행하면 릴리스 없이 빌드만 하고 결과물을 아티팩트로 올립니다.
 태그 전에 `dist/linux/com.kimtalmo.khannel.metainfo.xml`의 `<release>` 날짜를 갱신하고,
 의존성이 바뀌었으면 `THIRD_PARTY_NOTICES.md`를 다시 생성합니다(아래 라이선스 참고).
 

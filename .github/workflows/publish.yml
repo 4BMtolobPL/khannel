@@ -1,0 +1,44 @@
+name: 'publish'
+
+# GitHub Release를 게시하면(release.yml이 만든 초안을 웹에서 Publish) 배포 채널에 내보낸다.
+# - COPR: Release에 붙은 SRPM을 is2ogc3tc2/khannel에 제출 (chroot: fedora-44/45/rawhide x86_64)
+# 실패했거나 다시 내보내려면 Actions 탭에서 태그를 지정해 수동 실행한다.
+#
+# 필요한 시크릿: COPR_CONFIG — https://copr.fedorainfracloud.org/api/ 의 ~/.config/copr 내용
+#   (토큰 만료 시 다시 발급해 갱신)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '내보낼 릴리스 태그 (예: v1.0.0)'
+        required: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  copr:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    # COPR 빌드를 끝까지 기다린다(실패하면 job도 실패) — chroot 3개를 병렬로 빌드
+    timeout-minutes: 300
+    steps:
+      - name: install tools
+        run: dnf -y install copr-cli gh
+
+      - name: download SRPM
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.src.rpm'
+
+      - name: build in COPR
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          mkdir -p ~/.config
+          printf '%s\n' "$COPR_CONFIG" > ~/.config/copr
+          copr-cli build is2ogc3tc2/khannel ./*.src.rpm
