@@ -1,7 +1,7 @@
 use crate::kirc::core::ServerActor;
 use crate::kirc::event::EventSender;
 use crate::kirc::event::{
-    emit_server_added, emit_server_status, emit_system_message, emit_ui_event,
+    emit_server_added, emit_server_removed, emit_server_status, emit_system_message, emit_ui_event,
 };
 use crate::kirc::state::app::AppState;
 use crate::kirc::state::kirc::KircState;
@@ -163,6 +163,28 @@ impl KircManager {
                 &format!("닉네임을 '{new_nick}'(으)로 바꿨습니다. 다음 접속부터 적용됩니다."),
             );
         }
+        Ok(())
+    }
+
+    /// 서버 삭제: 상태에서 빼고 즉시 저장한 뒤(재시작해도 다시 접속하지 않게), 연결 중이었다면
+    /// 백그라운드에서 QUIT을 보내 정리하고 UI에 알린다.
+    pub fn remove_server(&self, server_id: ServerId) -> anyhow::Result<()> {
+        if self.is_shutting_down() {
+            return Err(anyhow!("Application is shutting down"));
+        }
+        let server = self
+            .kirc_state
+            .remove_server(server_id)
+            .context("Server not found")?;
+        self.kirc_state.persist();
+        info!(server_id = %server_id, "Server removed");
+
+        // 연결 정리는 기다리지 않는다 — 액터가 남은 상태 전이/이벤트를 보내도 이미 맵에서 빠진
+        // 서버라 저장/UI에 영향이 없다(UI는 없는 서버의 이벤트를 무시한다).
+        let runtime = server.take_runtime();
+        tokio::spawn(runtime.graceful_shutdown());
+
+        emit_server_removed(&self.ui_sink, server_id);
         Ok(())
     }
 

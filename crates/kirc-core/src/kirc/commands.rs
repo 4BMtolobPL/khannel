@@ -105,6 +105,13 @@ impl KircApi {
         Ok(())
     }
 
+    pub fn remove_server(&self, server_id: ServerId) -> Result<(), MyCustomError> {
+        info!("Command: remove server invoked, server_id: {server_id}");
+        self.manager
+            .remove_server(server_id)
+            .map_err(MyCustomError::Anyhow)
+    }
+
     pub fn cancel_connect(&self, server_id: ServerId) -> Result<(), MyCustomError> {
         info!("Command: cancel connect invoked, server_id: {server_id}");
 

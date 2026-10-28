@@ -494,6 +494,16 @@ Tauri 버전과 나란히 실행해 다음을 검증:
       모두 선점 시 Failed / 오프라인 변경 저장(재연결 없음) / Failed 서버 변경 시 새 닉으로 재연결 /
       대체 닉 접속 안내.
 
+14. **서버 삭제 기능 없음 (사용자 요청, 2026-10-28)** — Disconnect만 있어 재시작하면 저장된 서버에 다시
+    자동 접속했다(Svelte/Tauri도 동일).
+    - 코어: `KircState::remove_server` + `KircManager::remove_server` — 상태에서 빼고 즉시 저장한 뒤,
+      연결 중이었으면 백그라운드에서 `graceful_shutdown`(QUIT)으로 정리하고 `UiEvent::ServerRemoved` 발행.
+      남은 액터 이벤트는 맵에서 빠진 서버라 저장/UI에 영향 없음.
+    - UI: 서버 컨텍스트 메뉴 맨 아래 "Delete Server"(Danger) → 확인 모달(`overlay/remove_server_modal.rs`,
+      입력창이 없어 패널에 포커스 — Enter 삭제/Esc 취소, 실패 사유 표시). 모델은 서버와 그 채널/메시지/
+      선택/닉변 상태를 정리.
+    - 테스트: 연결된 서버 삭제 시 QUIT 전송 + 상태/저장에서 제거 + 이벤트, 없는 서버 삭제 에러.
+
 **낮음 / Svelte 상속 / nit**
 
 - 닉 비교 대소문자 구분 (`core.rs` NICK, `model.rs` Join/Part/Nick) — IRC 닉은 대소문자 무시.

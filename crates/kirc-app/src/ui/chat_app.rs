@@ -19,6 +19,7 @@ use crate::overlay::context_menu::{
     anchored_menu, context_menu_container, context_menu_item, context_menu_separator, MenuItemStyle,
 };
 use crate::overlay::modal::DismissEvent;
+use crate::overlay::remove_server_modal::RemoveServerModal;
 use crate::overlay::server_modal::ServerModal;
 use crate::theme::Theme;
 use crate::ui::input_bar::InputBar;
@@ -77,10 +78,12 @@ pub struct ChatApp {
     server_modal: Entity<ServerModal>,
     channel_modal: Entity<ChannelJoinModal>,
     nick_modal: Entity<ChangeNickModal>,
+    remove_modal: Entity<RemoveServerModal>,
 
     show_server_modal: bool,
     show_channel_modal: bool,
     show_nick_modal: bool,
+    show_remove_modal: bool,
 
     server_menu: Option<ServerMenuState>,
     channel_menu: Option<ChannelMenuState>,
@@ -103,6 +106,7 @@ impl ChatApp {
         let server_modal = cx.new(|cx| ServerModal::new(model.clone(), window, cx));
         let channel_modal = cx.new(|cx| ChannelJoinModal::new(model.clone(), window, cx));
         let nick_modal = cx.new(|cx| ChangeNickModal::new(model.clone(), window, cx));
+        let remove_modal = cx.new(|cx| RemoveServerModal::new(model.clone(), cx));
 
         // 자식 뷰(사이드바/메시지 뷰/입력바)는 각자 모델을 observe해 스스로 갱신한다.
         // 루트는 모델 변경 시 입력창 자동 포커스만 다시 판단하면 된다.
@@ -161,6 +165,11 @@ impl ChatApp {
             },
         )
         .detach();
+        cx.subscribe_in(&remove_modal, window, |this, _, _: &DismissEvent, _, cx| {
+            this.show_remove_modal = false;
+            cx.notify();
+        })
+        .detach();
         cx.subscribe_in(&nick_modal, window, |this, _, _: &DismissEvent, _, cx| {
             this.show_nick_modal = false;
             cx.notify();
@@ -175,9 +184,11 @@ impl ChatApp {
             server_modal,
             channel_modal,
             nick_modal,
+            remove_modal,
             show_server_modal: false,
             show_channel_modal: false,
             show_nick_modal: false,
+            show_remove_modal: false,
             server_menu: None,
             channel_menu: None,
             sidebar_open: true,
@@ -186,7 +197,26 @@ impl ChatApp {
     }
 
     fn any_modal_open(&self) -> bool {
-        self.show_server_modal || self.show_channel_modal || self.show_nick_modal
+        self.show_server_modal
+            || self.show_channel_modal
+            || self.show_nick_modal
+            || self.show_remove_modal
+    }
+
+    fn open_remove_modal(
+        &mut self,
+        server_id: ServerId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_remove_modal = true;
+        self.server_menu = None;
+        self.channel_menu = None;
+        self.remove_modal.update(cx, |modal, cx| {
+            modal.open_for(server_id, cx);
+            modal.focus(window, cx);
+        });
+        cx.notify();
     }
 
     fn open_server_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -235,7 +265,8 @@ impl ChatApp {
         }
     }
 
-    // ── 서버 컨텍스트 메뉴 (Svelte: Connect / Disconnect / Copy Server Name / Change Nickname) ──
+    // ── 서버 컨텍스트 메뉴 (Svelte: Connect / Disconnect / Copy Server Name / Change Nickname,
+    //    + Delete Server — kirc 추가) ──
     //
     // 항목 클릭 시 메뉴를 닫는다 (Svelte: window click listener가 메뉴 안 클릭에도 닫았다).
     // 모델 액션은 메뉴를 닫은 뒤 실행한다.
@@ -327,6 +358,24 @@ impl ChatApp {
                     // open_nick_modal이 메뉴도 닫는다
                     move |_, window, cx| {
                         chat.update(cx, |this, cx| this.open_nick_modal(id, window, cx));
+                    }
+                }),
+            )
+            .child(context_menu_separator(theme))
+            // 서버 삭제 — 되돌릴 수 없어 확인 모달을 거친다
+            .child(
+                context_menu_item(
+                    "menu-remove-server",
+                    "🗑",
+                    "Delete Server",
+                    MenuItemStyle::Danger,
+                    theme,
+                )
+                .on_click({
+                    let chat = chat.clone();
+                    // open_remove_modal이 메뉴도 닫는다
+                    move |_, window, cx| {
+                        chat.update(cx, |this, cx| this.open_remove_modal(id, window, cx));
                     }
                 }),
             );
@@ -665,6 +714,9 @@ impl Render for ChatApp {
                 d.child(self.server_modal.clone())
             })
             .when(self.show_nick_modal, |d| d.child(self.nick_modal.clone()))
+            .when(self.show_remove_modal, |d| {
+                d.child(self.remove_modal.clone())
+            })
             // ── 컨텍스트 메뉴 ──
             .children(server_menu.map(|state| self.render_server_menu(state, cx)))
             .children(channel_menu.map(|state| self.render_channel_menu(state, cx)));

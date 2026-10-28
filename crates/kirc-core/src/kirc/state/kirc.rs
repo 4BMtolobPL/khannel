@@ -46,6 +46,11 @@ impl KircState {
         Ok(server_id)
     }
 
+    /// 서버를 상태에서 빼낸다 (없으면 None). 저장은 호출자가 한다.
+    pub fn remove_server(&self, server_id: ServerId) -> Option<Arc<ServerState>> {
+        self.servers.lock().unwrap().remove(&server_id)
+    }
+
     pub fn drain_runtimes(&self) -> Vec<ServerRuntime> {
         let mut guard = self.servers.lock().unwrap();
         self.drained.store(true, Ordering::Release);

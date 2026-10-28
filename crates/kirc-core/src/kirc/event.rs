@@ -11,6 +11,8 @@ use tracing::trace;
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     ServerAdded(ServerDetail),
+    /// 서버 삭제 — UI는 서버와 그 채널/메시지를 지운다
+    ServerRemoved(ServerRemovedPayload),
     ServerStatus(ServerStatusPayload),
     ChannelLockChanged(ChannelLockChangedEvent),
     SystemMessage(SystemMessagePayload),
@@ -60,6 +62,11 @@ pub fn emit_server_added(
         nickname: nickname.to_string(),
         status,
     }));
+}
+
+pub fn emit_server_removed(ui_sink: &EventSender, server_id: ServerId) {
+    trace!("Emit UiEvent::ServerRemoved");
+    ui_sink.emit(UiEvent::ServerRemoved(ServerRemovedPayload { server_id }));
 }
 
 pub fn emit_server_status(ui_sink: &EventSender, server_id: ServerId, status: ServerStatus) {
@@ -221,6 +228,11 @@ pub struct ServerDetail {
     pub tls: bool,
     pub nickname: String,
     pub status: ServerStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerRemovedPayload {
+    pub server_id: ServerId,
 }
 
 #[derive(Debug, Clone)]

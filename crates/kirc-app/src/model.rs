@@ -249,6 +249,7 @@ impl IrcModel {
     fn handle_event(&mut self, event: UiEvent, cx: &mut Context<Self>) {
         match event {
             UiEvent::ServerAdded(detail) => self.on_server_added(detail),
+            UiEvent::ServerRemoved(payload) => self.on_server_removed(payload.server_id),
             UiEvent::ServerStatus(payload) => self.on_server_status(payload),
             UiEvent::ChannelLockChanged(payload) => self.on_channel_lock_changed(payload),
             UiEvent::SystemMessage(payload) => self.on_system_message(payload),
@@ -257,6 +258,23 @@ impl IrcModel {
         }
 
         cx.notify();
+    }
+
+    /// 서버 삭제: 서버와 그 채널/메시지/선택/닉변 상태를 정리한다.
+    fn on_server_removed(&mut self, server_id: ServerId) {
+        self.servers.remove(&server_id);
+        self.channels
+            .retain(|_, channel| channel.server_id != server_id);
+        // 메시지 버퍼 키는 복합 채널 ID(`serverId:channel`)
+        let prefix = format!("{server_id}:");
+        self.messages
+            .retain(|channel_id, _| !channel_id.starts_with(&prefix));
+        if self.current_server_id == Some(server_id) {
+            self.current_server_id = None;
+            self.current_channel_id = None;
+        }
+        self.nick_errors.remove(&server_id);
+        self.nick_change.reset(server_id);
     }
 
     fn on_server_added(&mut self, d: ServerDetail) {
@@ -873,6 +891,21 @@ impl IrcModel {
             tracing::warn!("leave_channel failed: {}", e);
         }
         cx.notify();
+    }
+
+    /// 서버 삭제 (RemoveServerModal 확인). 실패 사유는 모달이 표시한다.
+    /// UI 정리는 코어의 ServerRemoved 이벤트로 이어진다.
+    pub fn remove_server(
+        &mut self,
+        server_id: ServerId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let result = self.api.remove_server(server_id).map_err(|e| {
+            tracing::warn!("remove_server failed: {}", e);
+            e.to_string()
+        });
+        cx.notify();
+        result
     }
 
     // 서버 컨텍스트 메뉴(Disconnect)에서 사용.

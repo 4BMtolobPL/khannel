@@ -100,6 +100,11 @@ impl UiApi {
         self.kirc_api.send_message(server_id, target, message)
     }
 
+    pub fn remove_server(&self, server_id: ServerId) -> Result<(), MyCustomError> {
+        let _guard = self.rt.enter();
+        self.kirc_api.remove_server(server_id)
+    }
+
     pub fn cancel_connect(&self, server_id: ServerId) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
         self.kirc_api.cancel_connect(server_id)

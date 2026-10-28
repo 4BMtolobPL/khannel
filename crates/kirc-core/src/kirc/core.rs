@@ -1084,4 +1084,54 @@ mod quit_tests {
         let message = next_system_message(&mut h.rx).await;
         assert!(message.contains("'nick_'"), "{message}");
     }
+
+    // ==================== 서버 삭제 ====================
+
+    /// 연결된 서버를 삭제하면 QUIT을 보내 연결을 정리하고, 상태/config.json에서 빠지며
+    /// UI에 ServerRemoved를 보낸다. 다음 실행 때 복원(자동 접속)되지 않는다.
+    #[tokio::test]
+    async fn removing_connected_server_quits_and_persists() {
+        let (port, mock) = spawn_mock_server().await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+
+        h.api.remove_server(h.server_id).unwrap();
+
+        let got_quit = timeout(Duration::from_secs(5), mock)
+            .await
+            .expect("mock server timed out")
+            .unwrap();
+        assert!(got_quit, "QUIT was not sent on removal");
+
+        assert!(h.state.get_server(h.server_id).is_none());
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match h.rx.recv().await {
+                    Some(UiEvent::ServerRemoved(p)) if p.server_id == h.server_id => return,
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no ServerRemoved event");
+
+        // 저장된 상태에 서버가 남지 않는다 → 재시작해도 다시 접속하지 않는다
+        use crate::kirc::persistence::KircStateSnapshot;
+        use crate::memento::Memento;
+        let snapshot: KircStateSnapshot = crate::fs::load(&h.path).unwrap();
+        let restored: KircState = snapshot.restore();
+        assert!(restored.get_all_servers().is_empty());
+    }
+
+    /// 없는 서버 삭제는 에러.
+    #[tokio::test]
+    async fn removing_unknown_server_fails() {
+        let (port, _lines) = spawn_taken_nick_mock(&[]).await;
+        let h = NickHarness::new(port);
+        assert!(h.api.remove_server(uuid::Uuid::now_v7()).is_err());
+        assert!(h.state.get_server(h.server_id).is_some());
+    }
 }

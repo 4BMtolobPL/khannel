@@ -4,4 +4,5 @@ pub mod change_nick_modal;
 pub mod channel_join_modal;
 pub mod context_menu;
 pub mod modal;
+pub mod remove_server_modal;
 pub mod server_modal;
