@@ -504,6 +504,35 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   `tray-icon`/`ksni` 별도 스레드. 존재하지 않는 기능(Show/Quit 메뉴)을 fork에 붙이는 것은
   비권장(유지보수 리스크). 현재는 창을 닫으면 graceful shutdown 후 종료.
 - **네이티브 메뉴** (**대기**): zed 프레임워크는 macOS 메뉴 지원. Linux는 상황 확인 후 대응.
+  → **최소 범위로 구현 (2026-10-28, 사용자 결정)**: macOS 시스템 메뉴바에 앱 이름 메뉴 > "종료"
+    하나만 둔다(창이 없을 때도 ⌘Q가 동작하도록). 그 외 메뉴는 넣지 않는다. Linux는 gpui가 메뉴를
+    그리지 않으므로 등록하지 않는다.
+- **창 닫기 동작 / 미니멀 창 상단** (2026-10-28, 사용자 결정 — 트레이 확장 대비):
+  - 배경: macOS 실행 확인 결과, gpui 기본 종료 정책(macOS `QuitMode::Explicit`)으로 빨간 버튼을
+    눌러도 앱이 Dock에 남는데, `IrcModel`이 창(`ChatApp`) 안에서 만들어져 함께 사라졌다 → IRC
+    연결은 살아 있는데 이벤트는 버려지고, Dock 클릭에도 창이 다시 열리지 않았다.
+  - `IrcModel`을 앱 수준(gpui `Global` `MainModel`)으로 옮기고, `Application::on_reopen`에서 창이
+    없으면 다시 연다(macOS). 창이 닫혀 있는 동안 받은 메시지/unread는 그대로 유지된다.
+    Linux는 마지막 창을 닫으면 종료(기본 `LastWindowClosed`) — 동작 변화 없음.
+  - 키 바인딩·전역 Dismiss 리스너는 `ChatApp::show`에서 `main.rs`로 옮겨 앱 전체 1회 등록
+    (창을 다시 열 때마다 중복 등록되지 않게).
+  - 단축키 OS별 분리 (사용자 요청, `#[cfg]`): macOS는 `cmd-q`/`cmd-a,c,v,x`/`cmd-←,→`(줄 처음/끝)/
+    `ctrl-cmd-space`(문자 뷰어), 그 외는 `ctrl-q`/`ctrl-a,c,v,x`. 방향키·Home/End·Backspace/
+    Delete·Esc는 공통. 함께 수정: `ShowCharacterPalette`는 바인딩만 있고 TextInput 처리기가 없어
+    동작하지 않았다 → 처리기 추가.
+  - **창 상단에 별도의 바를 두지 않는다 (사용자 결정, zeron 참고)**:
+    `TitlebarOptions { appears_transparent: true, traffic_light_position: (10,10) }` +
+    `WindowDecorations::Client`로 시스템 타이틀바를 숨긴다. 창 왼쪽 위에 (macOS 신호등) +
+    사이드바 토글(☰)을 **고정 위치**로 얹고(사이드바를 열고 닫아도 같은 자리), 사이드바는 그 높이
+    (34px, zed `platform_title_bar_height`)만큼 위를 비운 뒤 서버/채널 목록을 보여준다. 메인 영역도
+    같은 높이의 위쪽 여백(배경/경계선 없음)을 두고, 이 여백들은 창 이동 영역(누르고 움직이면
+    `start_window_move`, 더블클릭: macOS `titlebar_double_click`/Linux `zoom_window`)이다.
+    Linux CSD일 때만 메인 여백 오른쪽 끝에 닫기(✕). macOS 신호등 자리 78px(zed `TRAFFIC_LIGHT_PADDING`).
+  - Linux CSD 프레임(`ui/window_frame.rs`, zed `client_side_decorations` 단순화): 타일링된 변은
+    그리지 않고, 플로팅 변에만 그림자/테두리/가장자리 리사이즈. niri 등 타일링 WM에선 사실상 없음.
+    Wayland `app_id`를 `com.kimtalmo.kirc-rs`로 지정(컴포지터 창 규칙용).
+  - 사이드바 토글 상태는 저장하지 않는다(사용자 결정).
+  - 검증: 빌드/clippy/테스트(리사이즈 경계 판정 3건) 통과. GUI 동작 macOS/niri 수동 확인 완료.
 - 제거: `src/`, `src-tauri/`, `svelte.config.js`, `vite.config.js`, `tsconfig.json`,
   `deno.lock`, `package.json` (svelte 관련 도구들), README/CI 정합성 수정.
   - **완료 (2026-10-28)**: 위 파일 + `static/`, `.oxfmtrc.json` 삭제. workspace members에서

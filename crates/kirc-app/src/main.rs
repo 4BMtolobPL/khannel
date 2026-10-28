@@ -12,16 +12,32 @@ mod ui;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{prelude::*, px, App, Bounds, KeyBinding, Size, WindowBounds, WindowOptions};
+use gpui::{
+    point, prelude::*, px, App, Bounds, Entity, Global, KeyBinding, Menu, MenuItem, Size,
+    TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions,
+};
 use gpui_platform::application;
 use kirc_core::fs;
 use kirc_core::kirc::persistence::KircStateSnapshot;
 use kirc_core::logging;
 use kirc_core::memento::Memento;
 
-use crate::action::Quit;
+use crate::action::{
+    Backspace, Copy, Cut, Delete, Dismiss, End, Home, Left, Paste, Quit, Right, SelectAll,
+    SelectLeft, SelectRight,
+};
 use crate::api::{build_kirc, setup, UiApi};
+use crate::model::IrcModel;
 use crate::ui::chat_app::ChatApp;
+
+/// 앱 수준 IRC 상태. 창과 생명주기를 분리해, macOS에서 창을 닫아도(앱은 계속 실행)
+/// 이벤트를 계속 받아 쌓고, 창을 다시 열면 그대로 이어서 보여준다.
+struct MainModel(Entity<IrcModel>);
+
+impl Global for MainModel {}
+
+/// 앱 식별자 — 데이터 디렉토리, Wayland app_id 공통.
+const APP_ID: &str = "com.kimtalmo.kirc-rs";
 
 /// Graceful shutdown에 허용하는 최대 대기 시간.
 ///
@@ -36,7 +52,7 @@ fn app_data_dir() -> std::path::PathBuf {
     // - Linux:  ~/.local/share/com.kimtalmo.kirc-rs
     // - macOS:  ~/Library/Application Support/com.kimtalmo.kirc-rs
     let mut base = directories::BaseDirs::new()
-        .map(|d| d.data_dir().join("com.kimtalmo.kirc-rs"))
+        .map(|d| d.data_dir().join(APP_ID))
         .unwrap_or_else(|| std::env::home_dir().unwrap().join(".kirc-rs"));
 
     // Tauri 앱의 app_data_dir + "/dev" 레이아웃 개념은 debug 빌드에서 유지
@@ -65,22 +81,44 @@ fn main() {
     let api = Arc::new(UiApi::new(rt, kirc_api, ui_sink));
 
     // 2. GPUI 앱 실행
-    application().run(move |cx: &mut App| {
+    let app = application();
+
+    // macOS: 창이 모두 닫힌 뒤 Dock 아이콘을 클릭하면 창을 다시 연다.
+    // (macOS 기본 종료 정책은 마지막 창을 닫아도 앱을 종료하지 않는다. Linux는 마지막 창을
+    //  닫으면 종료하므로 이 경로를 타지 않는다.)
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            if let Some(model) = cx.try_global::<MainModel>().map(|m| m.0.clone()) {
+                open_main_window(model, cx);
+            }
+        }
+    });
+
+    app.run(move |cx: &mut App| {
+        bind_keys(cx);
+
+        // macOS 시스템 메뉴바: 앱 이름 메뉴에 "종료" 하나만 둔다. 창이 모두 닫혀 있으면
+        // 키 입력을 받을 창이 없으므로, Cmd+Q가 동작하려면 메뉴 항목이 필요하다.
+        // (Linux에서는 gpui가 메뉴를 그리지 않으므로 등록하지 않는다.)
+        if cfg!(target_os = "macos") {
+            cx.set_menus([Menu {
+                name: "kirc-rs".into(),
+                items: vec![MenuItem::action("종료", Quit)],
+                disabled: false,
+            }]);
+        }
+
         // ── 안전 종료 흐름 (MIGRATION.md Phase 2: "Quit → manager.shutdown() → cx.quit()") ──
-        // 1) 단축키(Ctrl+Q / Cmd+Q): Quit 액션 →  shutdown → quit
+        // 1) 단축키(Cmd+Q / Ctrl+Q) 또는 macOS 메뉴 "종료": Quit 액션 → shutdown → quit
         let quit_api = api.clone();
-        cx.bind_keys([
-            KeyBinding::new("ctrl-q", Quit, None),
-            KeyBinding::new("cmd-q", Quit, None),
-        ]);
         cx.on_action::<Quit>(move |_, cx| {
             tracing::info!("Quit action received");
             quit_api.shutdown_blocking(SHUTDOWN_MAX_WAIT);
             cx.quit();
         });
 
-        // 2) 창의 닫기 버튼: Linux에서는 마지막 창이 닫히면 곧바로 앱 종료가 되므로
-        //    on_app_quit에서 동일한 graceful shutdown을 거친다 (이미 시작했으면 재진입 스킵).
+        // 2) 그 밖의 종료 경로(Linux 마지막 창 닫기, macOS Dock > 종료 등)는 on_app_quit에서
+        //    동일한 graceful shutdown을 거친다 (이미 시작했으면 재진입 스킵).
         let quit_api = api.clone();
         cx.on_app_quit(move |_cx| {
             tracing::info!("App quit requested");
@@ -89,17 +127,86 @@ fn main() {
         })
         .detach();
 
-        let bounds = Bounds::centered(None, Size::new(px(760.), px(520.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                // 반투명 팔레트(One Light/Dark alpha)가 비치려면 네이티브 배경을
-                // 투명으로 둬야 한다 (macOS 필수 — 불투명 뒷배경으로 가림).
-                window_background: gpui::WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
-            move |window, cx| cx.new(|cx| ChatApp::show(api.clone(), rx, window, cx)),
-        )
-        .expect("open main window failed");
+        // Esc → 컨텍스트 메뉴 닫기. 메뉴는 포커스 경로 밖 요소라 모달처럼 .on_action으로
+        // 받을 수 없어, 모달이 Dismiss를 소비하지 못한 경우 전역 버블 리스너로 닫는다.
+        cx.on_action::<Dismiss>(|_, cx| {
+            for window in cx.windows() {
+                if let Some(chat) = window.downcast::<ChatApp>() {
+                    chat.update(cx, |this, _, cx| this.close_menus(cx)).ok();
+                }
+            }
+        });
+
+        let model = cx.new(|cx| IrcModel::start(api.clone(), rx, cx));
+        cx.set_global(MainModel(model.clone()));
+        open_main_window(model, cx);
     });
+}
+
+/// 키 바인딩 (앱 전체에서 1회 — 창을 다시 열 때마다 중복 등록되지 않게).
+/// 종료/편집 단축키는 OS 관례에 맞춰 macOS는 cmd, 그 외는 ctrl 조합만 바인딩한다.
+fn bind_keys(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        // TextInput 표준 편집 액션 (gpui examples/input.rs 참고)
+        KeyBinding::new("cmd-a", SelectAll, None),
+        KeyBinding::new("cmd-c", Copy, None),
+        KeyBinding::new("cmd-v", Paste, None),
+        KeyBinding::new("cmd-x", Cut, None),
+        // macOS 관례: cmd-←/→ = 줄 처음/끝
+        KeyBinding::new("cmd-left", Home, None),
+        KeyBinding::new("cmd-right", End, None),
+        KeyBinding::new("ctrl-cmd-space", crate::action::ShowCharacterPalette, None),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-q", Quit, None),
+        // TextInput 표준 편집 액션 (gpui examples/input.rs 참고)
+        KeyBinding::new("ctrl-a", SelectAll, None),
+        KeyBinding::new("ctrl-c", Copy, None),
+        KeyBinding::new("ctrl-v", Paste, None),
+        KeyBinding::new("ctrl-x", Cut, None),
+    ]);
+
+    // OS 공통 편집 키
+    cx.bind_keys([
+        KeyBinding::new("backspace", Backspace, None),
+        KeyBinding::new("delete", Delete, None),
+        KeyBinding::new("left", Left, None),
+        KeyBinding::new("right", Right, None),
+        KeyBinding::new("shift-left", SelectLeft, None),
+        KeyBinding::new("shift-right", SelectRight, None),
+        KeyBinding::new("home", Home, None),
+        KeyBinding::new("end", End, None),
+    ]);
+    // Esc → 모달/컨텍스트 메뉴 닫기 (kirc::Dismiss)
+    cx.bind_keys([KeyBinding::new("escape", Dismiss, None)]);
+}
+
+/// 메인 창을 연다 (최초 실행 + macOS Dock 클릭 재오픈 공통).
+fn open_main_window(model: Entity<IrcModel>, cx: &mut App) {
+    let bounds = Bounds::centered(None, Size::new(px(760.), px(520.)), cx);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // 시스템 타이틀바를 숨기고 앱이 상단 바를 직접 그린다 (ui::title_bar).
+            // - macOS: 내용이 창 맨 위까지 차고, 신호등 버튼만 그 위에 얹힌다.
+            // - Linux: client-side decorations — 닫기 버튼/창 이동/리사이즈를 앱이 처리한다.
+            titlebar: Some(TitlebarOptions {
+                title: Some("kirc-rs".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(10.), px(10.))),
+            }),
+            window_decorations: Some(WindowDecorations::Client),
+            app_id: Some(APP_ID.to_string()),
+            // 반투명 팔레트(One Light/Dark alpha)가 비치려면 네이티브 배경을
+            // 투명으로 둬야 한다 (macOS 필수 — 불투명 뒷배경으로 가림).
+            // Linux CSD의 그림자 영역도 투명 배경이 필요하다.
+            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            ..Default::default()
+        },
+        move |window, cx| cx.new(|cx| ChatApp::show(model, window, cx)),
+    )
+    .expect("open main window failed");
 }

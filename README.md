@@ -33,7 +33,9 @@
 - **다크 모드**: 시스템 외관에 따라 One Light / One Dark 팔레트 자동 선택
 - **구조화된 로깅**: `tracing`을 활용한 디버그/런타임 구조화 로깅
 - **TLS 지원**: 보안 연결(TLS) 옵션
-- **시스템 트레이 / 네이티브 메뉴**: 예정 (GPUI 전환 후 별도 구현 — 현재는 창을 닫으면 종료)
+- **미니멀 창 상단**: 타이틀바 없이 왼쪽 위에 사이드바 토글 버튼만 표시 (macOS는 신호등 버튼 옆, Linux는 우측 상단에 닫기 버튼)
+- **창 닫기 동작**: macOS는 창을 닫아도 앱이 계속 실행되어 메시지를 받고, Dock 아이콘을 클릭하면 창이 다시 열림 (종료: ⌘Q / 앱 메뉴 > 종료 / Dock > 종료). Linux는 창을 닫으면 종료
+- **시스템 트레이**: 예정
 
 ## 아키텍처 개요
 
@@ -97,11 +99,12 @@ crates/kirc-app/src/
 ├── action.rs           # GPUI 액션 (Quit, Dismiss, 텍스트 편집)
 ├── theme.rs            # One Light / One Dark 팔레트
 ├── ui/
-│   ├── chat_app.rs     # 루트 뷰 (사이드바 + 메인 + 모달/컨텍스트 메뉴 조율)
+│   ├── chat_app.rs     # 루트 뷰 (창 컨트롤 + 사이드바 + 메인 + 모달/컨텍스트 메뉴 조율)
 │   ├── sidebar.rs      # 서버/채널 목록
 │   ├── message_view.rs # 메시지 목록 (가상화 list, 자동 스크롤, Unread Divider)
 │   ├── input_bar.rs    # 잠금 토글 + 메시지 입력 + Send
-│   └── input.rs        # IME 지원 단일 줄 TextInput
+│   ├── input.rs        # IME 지원 단일 줄 TextInput
+│   └── window_frame.rs # Linux client-side decorations (그림자/테두리/가장자리 리사이즈)
 └── overlay/
     ├── modal.rs        # 모달 공통 프레임 (스크림/패널)
     ├── server_modal.rs # 서버 연결

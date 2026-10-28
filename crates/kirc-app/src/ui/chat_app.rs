@@ -5,19 +5,12 @@
 //! `showServerModal`/`showChannelModal`/`showChangeNickModal`/컨텍스트 메뉴 state가
 //! 이 엔티티의 필드로 이관되었다.
 
-use std::sync::Arc;
-
 use gpui::{
-    div, prelude::*, Context, Entity, IntoElement, ParentElement, Pixels, Point, Render, Styled,
-    Window,
+    div, prelude::*, px, ClickEvent, Context, Decorations, Entity, FontWeight, IntoElement,
+    MouseButton, ParentElement, Pixels, Point, Render, Styled, Window,
 };
 use kirc_core::kirc::types::ServerId;
 
-use crate::action::{
-    Backspace, Copy, Cut, Delete, Dismiss, End, Home, Left, Paste, Right, SelectAll, SelectLeft,
-    SelectRight, ShowCharacterPalette,
-};
-use crate::api::UiApi;
 use crate::model::IrcModel;
 use crate::overlay::change_nick_modal::ChangeNickModal;
 use crate::overlay::channel_join_modal::ChannelJoinModal;
@@ -30,6 +23,13 @@ use crate::theme::Theme;
 use crate::ui::input_bar::InputBar;
 use crate::ui::message_view::MessageView;
 use crate::ui::sidebar::{Sidebar, SidebarEvent};
+use crate::ui::window_frame::window_frame;
+
+/// 창 맨 위의 컨트롤 줄 높이 — 신호등/사이드바 토글/닫기 버튼이 놓이는 높이이자 사이드바·메인
+/// 영역의 위쪽 여백 (zed `platform_title_bar_height`와 같은 34px). 별도의 바는 그리지 않는다.
+const TOP_INSET: Pixels = px(34.);
+/// macOS 신호등 버튼이 차지하는 왼쪽 여백 (zed `TRAFFIC_LIGHT_PADDING` — macOS 26 기준 78px)
+const TRAFFIC_LIGHT_PADDING: Pixels = px(78.);
 
 // ==================================== 컨텍스트 메뉴 state ====================================
 
@@ -66,49 +66,19 @@ pub struct ChatApp {
 
     server_menu: Option<ServerMenuState>,
     channel_menu: Option<ChannelMenuState>,
+
+    /// 사이드바 표시 여부 (상단 바 토글 버튼, 저장하지 않음)
+    sidebar_open: bool,
+    /// 창 이동 영역(위쪽 여백)에서 마우스를 누른 상태 — 실제로 움직이면 창 이동을 시작한다
+    /// (zed platform_title_bar의 should_move 패턴: 단순 클릭/더블클릭과 구분).
+    title_drag_pending: bool,
 }
 
 impl ChatApp {
-    pub fn show(
-        api: Arc<UiApi>,
-        rx: crate::api::UiEventReceiver,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        // TextInput 표준 편집 액션 바인딩 (gpui examples/input.rs 참고)
-        cx.bind_keys([
-            gpui::KeyBinding::new("backspace", Backspace, None),
-            gpui::KeyBinding::new("delete", Delete, None),
-            gpui::KeyBinding::new("left", Left, None),
-            gpui::KeyBinding::new("right", Right, None),
-            gpui::KeyBinding::new("shift-left", SelectLeft, None),
-            gpui::KeyBinding::new("shift-right", SelectRight, None),
-            gpui::KeyBinding::new("cmd-a", SelectAll, None),
-            gpui::KeyBinding::new("ctrl-a", SelectAll, None),
-            gpui::KeyBinding::new("cmd-v", Paste, None),
-            gpui::KeyBinding::new("ctrl-v", Paste, None),
-            gpui::KeyBinding::new("cmd-c", Copy, None),
-            gpui::KeyBinding::new("ctrl-c", Copy, None),
-            gpui::KeyBinding::new("cmd-x", Cut, None),
-            gpui::KeyBinding::new("ctrl-x", Cut, None),
-            gpui::KeyBinding::new("home", Home, None),
-            gpui::KeyBinding::new("end", End, None),
-            gpui::KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),
-        ]);
-        // Esc → 모달/컨텍스트 메뉴 닫기 (kirc::Dismiss)
-        cx.bind_keys([gpui::KeyBinding::new("escape", Dismiss, None)]);
-
-        // 컨텍스트 메뉴는 포커스 경로 밖 요소라 모달처럼 .on_action으로 받을 수 없다 →
-        // 모달이 Dismiss를 소비하지 못한 경우(= 메뉴만 떠 있는 경우) 전역 버블 리스너로 닫는다.
-        let chat = cx.entity().downgrade();
-        gpui::App::on_action(cx, move |_: &Dismiss, cx| {
-            chat.update(cx, |this, cx| this.close_menus(cx)).ok();
-        });
-
-        // 1) IrcModel: UiEvent 소비 → 상태 반영 (ircService.ts 포팅)
-        let model = cx.new(|inner| IrcModel::start(api.clone(), rx, inner));
-
-        // 2) 자식 뷰/모달
+    /// `model`은 앱 수준에서 만들어 넘긴다 — 창을 닫았다 다시 열어도 IRC 상태가 이어진다.
+    /// (키 바인딩/전역 Dismiss 리스너는 main.rs에서 앱 전체 1회 등록)
+    pub fn show(model: Entity<IrcModel>, window: &Window, cx: &mut Context<Self>) -> Self {
+        // 자식 뷰/모달
         let sidebar = cx.new(|cx| Sidebar::new(model.clone(), cx));
         let message_view = cx.new(|cx| MessageView::new(model.clone(), cx));
         let input_bar = cx.new(|cx| InputBar::new(model.clone(), window, cx));
@@ -192,6 +162,8 @@ impl ChatApp {
             show_nick_modal: false,
             server_menu: None,
             channel_menu: None,
+            sidebar_open: true,
+            title_drag_pending: false,
         }
     }
 
@@ -237,7 +209,7 @@ impl ChatApp {
         cx.notify();
     }
 
-    fn close_menus(&mut self, cx: &mut Context<Self>) {
+    pub fn close_menus(&mut self, cx: &mut Context<Self>) {
         if self.server_menu.is_some() || self.channel_menu.is_some() {
             self.server_menu = None;
             self.channel_menu = None;
@@ -407,6 +379,113 @@ impl ChatApp {
     }
 }
 
+impl ChatApp {
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_open = !self.sidebar_open;
+        cx.notify();
+    }
+
+    /// 창 이동 영역: 누른 채 움직이면 창 이동, 더블클릭이면 확대/축소.
+    /// 사이드바·메인 영역의 위쪽 여백에 쓰인다 (시스템 타이틀바 대체).
+    fn drag_region(&self, id: &'static str, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let is_macos = cfg!(target_os = "macos");
+        div()
+            .id(id)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.title_drag_pending = true),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.title_drag_pending = false),
+            )
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.title_drag_pending = false))
+            .on_mouse_move(cx.listener(|this, _, window, _| {
+                if this.title_drag_pending {
+                    this.title_drag_pending = false;
+                    window.start_window_move();
+                }
+            }))
+            .on_click(move |event: &ClickEvent, window, _| {
+                if event.click_count() == 2 {
+                    if is_macos {
+                        // 시스템 설정(제목 막대 더블클릭 동작)을 따른다
+                        window.titlebar_double_click();
+                    } else {
+                        window.zoom_window();
+                    }
+                }
+            })
+    }
+
+    /// 창 왼쪽 위에 고정된 컨트롤: (macOS 신호등 자리) + 사이드바 토글.
+    /// 사이드바를 열고 닫아도 같은 자리에 머문다 — 열리면 그 아래로 서버/채널 목록이 보인다.
+    fn render_corner_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = Theme::current(cx);
+        let left = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+            TRAFFIC_LIGHT_PADDING
+        } else {
+            px(8.)
+        };
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .h(TOP_INSET)
+            .pl(left)
+            .flex()
+            .items_center()
+            .child(
+                window_button("toggle-sidebar", "☰", theme)
+                    .hover(|h| h.bg(theme.hover).text_color(theme.text_main))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_sidebar(cx))),
+            )
+    }
+
+    /// 메인 영역 위쪽 여백: 창 이동 영역 + (Linux CSD일 때) 오른쪽 위 닫기 버튼.
+    fn render_main_top(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        // Linux에서 컴포지터가 CSD를 받아들였을 때만 닫기 버튼을 그린다
+        // (서버 측 장식이면 시스템 타이틀바에 이미 닫기 버튼이 있다).
+        let show_close = !cfg!(target_os = "macos")
+            && matches!(window.window_decorations(), Decorations::Client { .. });
+
+        div()
+            .flex_shrink_0()
+            .h(TOP_INSET)
+            .w_full()
+            .flex()
+            .items_center()
+            .pr(px(8.))
+            .child(self.drag_region("main-drag", cx).flex_1().h_full())
+            .when(show_close, |d| {
+                d.child(
+                    window_button("window-close", "✕", theme)
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(|h| h.bg(theme.danger_hover_bg).text_color(theme.danger_text))
+                        // Linux는 마지막 창을 닫으면 앱이 종료된다(on_app_quit → graceful shutdown)
+                        .on_click(|_, window, _| window.remove_window()),
+                )
+            })
+    }
+}
+
+/// 창 컨트롤 버튼 공통 모양 (사이드바 토글, 닫기)
+fn window_button(id: &'static str, label: &'static str, theme: Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(28.))
+        .h(px(24.))
+        .rounded(px(4.))
+        .cursor_pointer()
+        .text_color(theme.text_subtle)
+        .child(label)
+}
+
 impl Render for ChatApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
@@ -427,23 +506,46 @@ impl Render for ChatApp {
         let server_menu = self.server_menu;
         let channel_menu = self.channel_menu.clone();
 
-        div()
+        let main_top = self.render_main_top(window, cx);
+        let corner_controls = self.render_corner_controls(window, cx);
+
+        let content = div()
+            .relative()
             .size_full()
             .flex()
             .bg(theme.bg_main)
             .text_color(theme.text_main)
-            // ── 좌측 사이드바 ──
-            .child(self.sidebar.clone())
-            // ── 우측 메인 ──
+            // ── 좌측 사이드바 (토글): 위쪽 여백(창 이동 영역, 토글 버튼 자리) + 서버/채널 목록 ──
+            .when(self.sidebar_open, |d| {
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            self.drag_region("sidebar-drag", cx)
+                                .flex_shrink_0()
+                                .h(TOP_INSET)
+                                .bg(theme.bg_side)
+                                .border_r_1()
+                                .border_color(theme.border),
+                        )
+                        .child(self.sidebar.clone()),
+                )
+            })
+            // ── 우측 메인: 위쪽 여백(창 이동 영역 + Linux 닫기 버튼) + 메시지 + 입력 ──
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .flex_col()
+                    .child(main_top)
                     .child(self.message_view.clone())
                     .child(self.input_bar.clone()),
             )
+            // ── 왼쪽 위 고정 컨트롤 (사이드바 토글) — 사이드바/메인 위에 얹는다 ──
+            .child(corner_controls)
             // ── 모달 ──
             .when(self.show_channel_modal, |d| {
                 d.child(self.channel_modal.clone())
@@ -454,6 +556,9 @@ impl Render for ChatApp {
             .when(self.show_nick_modal, |d| d.child(self.nick_modal.clone()))
             // ── 컨텍스트 메뉴 ──
             .children(server_menu.map(|state| self.render_server_menu(state, cx)))
-            .children(channel_menu.map(|state| self.render_channel_menu(state, cx)))
+            .children(channel_menu.map(|state| self.render_channel_menu(state, cx)));
+
+        // Linux CSD: 그림자/테두리/가장자리 리사이즈 (macOS는 그대로 통과)
+        window_frame(content, window, cx)
     }
 }

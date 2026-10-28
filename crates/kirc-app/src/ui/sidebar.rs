@@ -101,6 +101,9 @@ impl Render for Sidebar {
         div()
             .w(px(224.)) // Svelte w-56
             .flex_shrink_0()
+            // ChatApp이 [위쪽 여백 + 사이드바] 세로 컨테이너로 감싸므로 남은 높이를 채운다
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .bg(theme.bg_side)

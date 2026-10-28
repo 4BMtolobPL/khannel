@@ -22,7 +22,8 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::action::{
-    Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft, SelectRight,
+    Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft,
+    SelectRight, ShowCharacterPalette,
 };
 use crate::theme::Theme;
 
@@ -239,6 +240,18 @@ impl TextInput {
             // 메시지를 잘라 서버엔 첫 줄만 가고 로컬 에코는 전체가 보인다.
             let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
             self.replace_text_in_range(None, &text, window, cx);
+        }
+    }
+
+    /// macOS 문자 뷰어(이모지/기호) — ctrl-cmd-space
+    fn show_character_palette(
+        &mut self,
+        _: &ShowCharacterPalette,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if self.enabled {
+            window.show_character_palette();
         }
     }
 
@@ -848,6 +861,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::show_character_palette))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
