@@ -10,7 +10,7 @@
 //!
 //! Svelte 앱은 Tailwind `dark:` 변형(prefers-color-scheme)으로 다크 모드를 지원하므로,
 //! GPUI에서는 [`Theme::current`]가 `cx.window_appearance()`로 동일한 기준으로 선택한다.
-//! (MIGRATION.md Phase 3 표: "Tailwind class → GPUI 스타일 (dark mode: ActiveTheme 환경 or 자체 toggle)")
+//! (docs/MIGRATION.md Phase 3 표: "Tailwind class → GPUI 스타일 (dark mode: ActiveTheme 환경 or 자체 toggle)")
 
 use gpui::{App, Rgba, WindowAppearance, rgb, rgba};
 

@@ -1,7 +1,7 @@
 //! InputBar: 잠금 토글 + 메시지 입력 + Send 버튼.
 //!
 //! Svelte `+page.svelte`의 `<section>` 입력 영역 포팅. Phase 2의 키 네이밍 기반
-//! 간이 composer를 IME 지원 TextInput 엔티티로 교체했다 (MIGRATION.md Phase 3).
+//! 간이 composer를 IME 지원 TextInput 엔티티로 교체했다 (docs/MIGRATION.md Phase 3).
 
 use gpui::{
     App, ClickEvent, Context, Entity, Focusable, IntoElement, ParentElement, Render,

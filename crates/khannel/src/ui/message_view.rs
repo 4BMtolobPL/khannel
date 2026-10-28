@@ -1,7 +1,7 @@
 //! MessageView: 메시지 목록 (자동 스크롤 + UnreadDivider).
 //!
 //! Svelte `MessageView.svelte`/`UnreadDivider.svelte`의 포팅:
-//! - 대량 메시지를 위한 GPUI `list` 가상화 (MIGRATION.md 리스크 완화: "GPUI list 기반 가상화")
+//! - 대량 메시지를 위한 GPUI `list` 가상화 (docs/MIGRATION.md 리스크 완화: "GPUI list 기반 가상화")
 //! - `FollowMode::Tail` → Svelte의 `isBottom` 자동 스크롤과 동일
 //!   (아래에서 위로 스크롤했다가 다시 맨 아래로 오면 following 재개)
 //! - 채널 전환 시 `lastReadMessageId` 위치로 스크롤 복원 (scrollIntoView block:"start" 동일)

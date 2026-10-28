@@ -1,4 +1,4 @@
-//! GPUI Actions (MIGRATION.md 목표 구조의 `action.rs`).
+//! GPUI Actions (docs/MIGRATION.md 목표 구조의 `action.rs`).
 //!
 //! Phase 2에서는 종료 흐름용 `Quit` 액션만 정의.
 //! Phase 3에서 TextInput(IME 지원 입력창)의 표준 편집 액션을 추가한다.

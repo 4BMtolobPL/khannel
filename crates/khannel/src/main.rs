@@ -109,7 +109,7 @@ fn main() {
             }]);
         }
 
-        // ── 안전 종료 흐름 (MIGRATION.md Phase 2: "Quit → manager.shutdown() → cx.quit()") ──
+        // ── 안전 종료 흐름 (docs/MIGRATION.md Phase 2: "Quit → manager.shutdown() → cx.quit()") ──
         // 1) 단축키(Cmd+Q / Ctrl+Q) 또는 macOS 메뉴 "종료": Quit 액션 → shutdown → quit
         let quit_api = api.clone();
         cx.on_action::<Quit>(move |_, cx| {

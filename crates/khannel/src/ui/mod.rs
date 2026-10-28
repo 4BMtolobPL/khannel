@@ -1,4 +1,4 @@
-//! UI 컴포넌트 계층 (MIGRATION.md 목표 구조의 `ui/`).
+//! UI 컴포넌트 계층 (docs/MIGRATION.md 목표 구조의 `ui/`).
 
 pub mod chat_app;
 pub mod input;

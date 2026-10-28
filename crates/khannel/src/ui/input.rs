@@ -7,7 +7,7 @@
 //! - Enter 제출은 조합 중이 아닐 때만 발화한다(`TextInputEvent::Submit`).
 //!
 //! Phase 2의 `handle_composer_key`(키 네이밍 기반 간이 composer)를 이 컴포넌트로 교체하는
-//! 것이 MIGRATION.md Phase 3의 목표다.
+//! 것이 docs/MIGRATION.md Phase 3의 목표다.
 
 use std::ops::Range;
 

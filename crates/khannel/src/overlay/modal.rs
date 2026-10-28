@@ -2,7 +2,7 @@
 //!
 //! Svelte 모달들의 `fixed inset-0 z-50 flex items-center justify-center bg-black/30`
 //! 오버레이를 GPUI `deferred`로 구현한다. (gpui-component는 crates.io gpui를 쓰므로
-//! git dep(zed)과 소스가 달라 타입이 통일되지 않음 → MIGRATION.md의 "자체 오버레이" 선택)
+//! git dep(zed)과 소스가 달라 타입이 통일되지 않음 → docs/MIGRATION.md의 "자체 오버레이" 선택)
 
 use gpui::{
     App, ClickEvent, Div, IntoElement, ParentElement, SharedString, Styled, Window, deferred, div,
