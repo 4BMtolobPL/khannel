@@ -441,6 +441,11 @@ Tauri 버전과 나란히 실행해 다음을 검증:
        높이 0의 빈 div라 화면엔 안 보였지만 항목 수가 O(n²)으로 증가). `count - prev_count`로 수정.
 9. **긴 입력이 Send 버튼 위로 넘침** (`input.rs` prepaint, `input_bar.rs` 입력 상자) —
    TextInput에 가로 스크롤/clip 없음, 커서가 화면 밖으로 나감.
+   - **수정 (2026-10-28)**: `TextInput::scroll_x` 가로 스크롤 오프셋 + paint를
+     `with_content_mask(bounds)`로 clip. prepaint에서 `adjust_scroll_x`로 커서가 보이도록 필요한
+     만큼만 민다(내용이 다 들어오면 0, 내용 끝 너머로는 스크롤 안 함, 플레이스홀더는 0).
+     마우스 클릭 위치·IME 후보창 위치(`bounds_for_range`)·`character_index_for_point`도 오프셋 반영.
+     단위 테스트 4건(`ui::input::tests`). 모달 입력창에도 동일 적용. GUI 동작 수동 확인 완료.
 10. **서버 메시지 미표시** (`model.rs` `add_server_message`) — `server_messages`를 렌더하는
     곳이 없어 "서버에 연결되었습니다."/IRC `ERROR`가 보이지 않는다(Svelte 동일, 4번의 근본 원인).
 11. **ChangeNickModal 즉시 닫힘 가능** (`model.rs` Nick 분기, `change_nick_modal.rs` `open_for`) —

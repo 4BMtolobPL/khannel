@@ -12,8 +12,8 @@
 use std::ops::Range;
 
 use gpui::{
-    div, fill, prelude::*, px, rgba, App, Bounds, ClipboardItem, Context, CursorStyle, Element,
-    ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    div, fill, prelude::*, px, rgba, App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle,
+    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, InspectorElementId, InteractiveElement, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
     Point, Render, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
@@ -49,6 +49,9 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// 가로 스크롤 오프셋 — 내용이 입력창보다 길 때 커서가 보이도록 왼쪽으로 민 양.
+    /// prepaint에서 커서 위치로 재계산하고 paint에서 저장한다.
+    scroll_x: Pixels,
     is_selecting: bool,
     /// 잠긴 채널 등에서 입력 비활성화 (Svelte `disabled`)
     enabled: bool,
@@ -65,6 +68,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            scroll_x: px(0.),
             is_selecting: false,
             enabled: true,
         }
@@ -325,7 +329,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        line.closest_index_for_x(position.x - bounds.left() + self.scroll_x)
     }
 
     fn select_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
@@ -544,15 +548,10 @@ impl EntityInputHandler for TextInput {
             return None;
         }
         let range = self.range_from_utf16(&range_utf16);
+        let left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
-            gpui::point(
-                bounds.left() + last_layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            gpui::point(
-                bounds.left() + last_layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            gpui::point(left + last_layout.x_for_index(range.start), bounds.top()),
+            gpui::point(left + last_layout.x_for_index(range.end), bounds.bottom()),
         ))
     }
 
@@ -580,7 +579,7 @@ impl EntityInputHandler for TextInput {
         if last_layout.text != self.content {
             return None;
         }
-        let utf8_index = last_layout.closest_index_for_x(line_point.x);
+        let utf8_index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -603,6 +602,37 @@ struct PrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    scroll_x: Pixels,
+}
+
+/// 커서 너비 (prepaint의 커서 quad와 동일).
+const CURSOR_WIDTH: Pixels = px(2.);
+
+/// 커서가 입력창 안에 보이도록 가로 스크롤 오프셋을 조정한다.
+///
+/// 커서가 오른쪽 끝을 넘으면 오른쪽으로, 왼쪽 끝을 넘으면 왼쪽으로 필요한 만큼만 민다.
+/// 내용이 입력창에 다 들어오면 0, 내용 끝 너머로는 스크롤하지 않는다.
+fn adjust_scroll_x(
+    scroll_x: Pixels,
+    cursor_x: Pixels,
+    line_width: Pixels,
+    view_width: Pixels,
+) -> Pixels {
+    let mut scroll_x = scroll_x;
+    if cursor_x + CURSOR_WIDTH > scroll_x + view_width {
+        scroll_x = cursor_x + CURSOR_WIDTH - view_width;
+    }
+    if cursor_x < scroll_x {
+        scroll_x = cursor_x;
+    }
+    let max_scroll = line_width + CURSOR_WIDTH - view_width;
+    if scroll_x > max_scroll {
+        scroll_x = max_scroll;
+    }
+    if scroll_x < px(0.) {
+        scroll_x = px(0.);
+    }
+    scroll_x
 }
 
 impl IntoElement for TextInputElement {
@@ -706,13 +736,20 @@ impl Element for TextInputElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let cursor_pos = line.x_for_index(cursor);
+        // 플레이스홀더 표시 중(내용 없음)에는 스크롤하지 않는다.
+        let scroll_x = if input.content.is_empty() {
+            px(0.)
+        } else {
+            adjust_scroll_x(input.scroll_x, cursor_pos, line.width(), bounds.size.width)
+        };
+        let left = bounds.left() - scroll_x;
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        gpui::point(bounds.left() + cursor_pos, bounds.top()),
-                        gpui::size(px(2.), bounds.bottom() - bounds.top()),
+                        gpui::point(left + cursor_pos, bounds.top()),
+                        gpui::size(CURSOR_WIDTH, bounds.bottom() - bounds.top()),
                     ),
                     gpui::blue(),
                 )),
@@ -721,14 +758,8 @@ impl Element for TextInputElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        gpui::point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        gpui::point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
+                        gpui::point(left + line.x_for_index(selected_range.start), bounds.top()),
+                        gpui::point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                     ),
                     rgba(0x3311ff30),
                 )),
@@ -739,6 +770,7 @@ impl Element for TextInputElement {
             line: Some(line),
             cursor,
             selection,
+            scroll_x,
         }
     }
 
@@ -758,29 +790,36 @@ impl Element for TextInputElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
-            window.paint_quad(selection)
-        }
         let line = prepaint.line.take().unwrap();
-        line.paint(
-            bounds.origin,
-            window.line_height(),
-            gpui::TextAlign::Left,
-            None,
-            window,
-            cx,
-        )
-        .unwrap();
+        let scroll_x = prepaint.scroll_x;
+        let show_cursor = focus_handle.is_focused(window) && self.input.read(cx).is_enabled();
 
-        if focus_handle.is_focused(window) && self.input.read(cx).is_enabled() {
-            if let Some(cursor) = prepaint.cursor.take() {
-                window.paint_quad(cursor);
+        // 입력창 경계 밖(Send 버튼 등)으로 텍스트/선택 영역이 넘쳐 그려지지 않게 clip한다.
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            if let Some(selection) = prepaint.selection.take() {
+                window.paint_quad(selection)
             }
-        }
+            line.paint(
+                gpui::point(bounds.left() - scroll_x, bounds.top()),
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .unwrap();
+
+            if show_cursor {
+                if let Some(cursor) = prepaint.cursor.take() {
+                    window.paint_quad(cursor);
+                }
+            }
+        });
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
+            input.scroll_x = scroll_x;
         });
     }
 }
@@ -820,5 +859,37 @@ impl Render for TextInput {
             // 비활성화(Svelte `disabled`): 입력 요소를 흐리게 표시
             .when(!enabled, |d| d.opacity(0.5))
             .child(TextInputElement { input: cx.entity() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEW: Pixels = px(100.);
+
+    #[test]
+    fn short_text_never_scrolls() {
+        assert_eq!(adjust_scroll_x(px(0.), px(50.), px(60.), VIEW), px(0.));
+        // 이전 오프셋이 남아 있어도 내용이 다 들어오면 0으로 돌아온다 (예: 텍스트 삭제 후)
+        assert_eq!(adjust_scroll_x(px(40.), px(50.), px(60.), VIEW), px(0.));
+    }
+
+    #[test]
+    fn cursor_past_right_edge_scrolls_just_enough() {
+        // 커서(200) + 커서 너비(2)가 오른쪽 끝에 붙도록
+        assert_eq!(adjust_scroll_x(px(0.), px(200.), px(200.), VIEW), px(102.));
+    }
+
+    #[test]
+    fn cursor_past_left_edge_scrolls_back() {
+        assert_eq!(adjust_scroll_x(px(102.), px(30.), px(200.), VIEW), px(30.));
+        // Home: 맨 앞으로
+        assert_eq!(adjust_scroll_x(px(102.), px(0.), px(200.), VIEW), px(0.));
+    }
+
+    #[test]
+    fn cursor_inside_view_keeps_offset() {
+        assert_eq!(adjust_scroll_x(px(50.), px(80.), px(200.), VIEW), px(50.));
     }
 }
