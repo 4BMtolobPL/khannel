@@ -670,7 +670,7 @@ Tauri 버전과 나란히 실행해 다음을 검증:
     - 아이콘: `dist/macos/icon-1024.png` 하나 → `dist/macos/icons/icon_<N>x<N>[@2x].png` iconset(16~1024).
       cargo-packager의 icns 변환은 1024px를 밀도 1로는 받지 않고(`@2x` 접미사로 레티나 판별) **16비트 PNG를 거부**한다 —
       ImageMagick 그림자 합성 결과가 16비트였어서 `PNG32:` + `-depth 8`로 고정.
-    - Linux에서 `--formats app`으로 번들 구조·Info.plist·icns(13개 타입) 확인. dmg/서명/실행은 macOS에서 확인 필요:
+    - Linux에서 `--formats app`으로 번들 구조·Info.plist·icns(13개 타입) 확인. dmg/서명/실행은 macOS에서 사용자 확인 완료:
       터미널 창이 뜨지 않음, Dock 아이콘, 메뉴바 앱 이름, 데이터 경로(`~/Library/Application Support/com.kimtalmo.khannel`),
       `codesign -dv`(Signature=adhoc), dmg를 받은 것처럼 격리 속성을 붙였을 때 "그래도 열기" 흐름.
 
