@@ -54,9 +54,14 @@ impl ServerActor {
         trace!(server_id = %self.server_id, "Start server actor loop");
         let outcome = self.run_session(client, stream, rx).await;
 
-        // 4. 세션 종료(정상 종료/연결 단절 공통). 추후 재연결 구현 시 Closed 분기가 재시도 진입점이 된다.
-        self.server.transition_to_disconnected();
-        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
+        // 4. 세션 종료. 추후 재연결 구현 시 Closed 분기가 재시도 진입점이 된다.
+        match &outcome {
+            SessionOutcome::Failed(reason) => self.fail(reason.clone()),
+            SessionOutcome::Quit | SessionOutcome::Closed => {
+                self.server.transition_to_disconnected();
+                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
+            }
+        }
 
         debug!(server_id = %self.server_id, reason = ?outcome, "Server actor session ended");
     }
@@ -86,7 +91,7 @@ impl ServerActor {
         Ok((client, stream))
     }
 
-    /// 메인 세션 루프. 정상 종료(Quit) 또는 연결 단절(Closed)로 종료 사유를 반환한다.
+    /// 메인 세션 루프. 정상 종료(Quit)·연결 단절(Closed)·실패(Failed)로 종료 사유를 반환한다.
     #[instrument(skip_all, fields(server_id = %self.server_id))]
     async fn run_session(
         &self,
@@ -103,9 +108,17 @@ impl ServerActor {
                             let _ = self.handle_message(&client, message);
                         }
                         Some(Err(error::Error::NoUsableNick)) => {
-                            // 사용 가능한 닉네임이 없을때 (단순 닉네임 중복 등)
-                            // 처음부터 사용가능한 닉네임이 없었다면 identify에서 걸렸을테니 break 하지 않고 continue
+                            // 서버가 닉네임을 거부(433 ERR_NICKNAMEINUSE / 432 ERR_ERRONEOUSNICKNAME)했고
+                            // alt_nicks가 비어 있어 irc crate가 더 시도할 닉네임이 없는 경우.
                             debug!(event = "irc_stream_error", error = "NoUsableNick", "IRC stream error, No usable nick");
+
+                            // 등록 단계: 등록이 영영 끝나지 않으므로(Registering 정지) 세션을 실패 처리한다.
+                            if self.server.status() == ServerStatus::Registering {
+                                let nickname = self.server.config().nickname().to_string();
+                                return SessionOutcome::Failed(format!(
+                                    "닉네임 '{nickname}'을(를) 사용할 수 없습니다 (이미 사용 중이거나 유효하지 않음)"
+                                ));
+                            }
 
                             // 닉네임 변경은 alt_nick 없이 실패시 emit 후 바로 continue
                             emit_change_nick_failed(&self.ui_sink, self.server_id, "Can't change nickname");
@@ -316,6 +329,8 @@ enum SessionOutcome {
     Quit,
     /// 연결 단절 (스트림 에러 또는 스트림 종료)
     Closed,
+    /// 세션을 계속할 수 없는 실패 (예: 등록 단계 닉네임 거부). 사유는 Failed 상태에 기록된다.
+    Failed(String),
 }
 
 /// QUIT 전송 후 서버가 연결을 닫을 때까지 대기하는 최대 시간.
@@ -486,5 +501,47 @@ mod quit_tests {
         assert!(got_quit, "QUIT was never written to the socket");
 
         wait_for_status(&mut rx, server_id, ServerStatus::Disconnected).await;
+    }
+
+    /// 등록 단계에서 닉네임이 중복(433)되면 Registering에 갇히지 않고 사유와 함께 Failed가 된다.
+    #[tokio::test]
+    async fn nick_in_use_during_registration_fails_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mock = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.starts_with("NICK") {
+                    let _ = write
+                        .write_all(b":mock 433 * nick :Nickname is already in use\r\n")
+                        .await;
+                }
+            }
+        });
+
+        let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
+        let state = Arc::new(KircState::from_iter([ServerStateSnapshot::new(
+            config.clone(),
+            HashMap::new(),
+        )]));
+        let server_id = *state.get_all_servers().keys().next().unwrap();
+        let server = state.get_server(server_id).unwrap();
+
+        let (tx, mut rx) = unbounded_channel::<UiEvent>();
+        let manager = KircManager::new(state.clone(), Arc::new(tx));
+
+        manager.connect_server(Some(server_id), config).unwrap();
+        wait_for_status(&mut rx, server_id, ServerStatus::Failed).await;
+
+        let error = server.last_error().expect("failure reason missing");
+        assert!(error.contains("'nick'"), "unexpected reason: {error}");
+
+        // Failed 이후 Disconnected로 덮어쓰지 않는다
+        tokio::task::yield_now().await;
+        assert_eq!(server.status(), ServerStatus::Failed);
+
+        mock.abort();
     }
 }

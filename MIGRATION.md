@@ -380,6 +380,13 @@ Tauri 버전과 나란히 실행해 다음을 검증:
    `alt_nicks: vec![]`이라 등록 단계 433/432는 `NoUsableNick`이 되는데, 코어는 이를
    "닉변 실패"로만 처리하고 계속 진행 → 등록이 끝나지 않고, 에러는 `nick_errors`에만
    있어 닉변 모달을 열어야 보인다. 수정: Registering 상태에서는 사유와 함께 `fail()`.
+   - **해결 (2026-10-28)**: 상태가 Registering일 때 `NoUsableNick`이면 `SessionOutcome::Failed(사유)`로
+     세션 종료 → `run()`이 Disconnected 대신 `fail()`(Failed + `last_error`) 처리. 등록 이후의
+     닉변 실패는 기존대로 `ChangeNickFailed` emit 후 계속. 회귀 테스트
+     `core::quit_tests::nick_in_use_during_registration_fails_server`(mock 서버가 NICK에 433 응답)는
+     수정 전 Registering 정지로 타임아웃, 수정 후 통과.
+   - 잔여: UI는 Failed를 Disconnected와 같은 회색 점으로 표시하고 `last_error`를 어디에도
+     보여주지 않는다 → 사유 표시는 10번(서버 메시지 미표시)과 함께 처리.
 5. **사이드바 서버/채널 순서 무작위** (`sidebar.rs` — `HashMap::values()` 순회).
    SvelteMap은 삽입 순서 유지 → 패리티 회귀. 수정: `IndexMap` 또는 정렬.
 
