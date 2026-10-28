@@ -673,6 +673,21 @@ Tauri 버전과 나란히 실행해 다음을 검증:
     - Linux에서 `--formats app`으로 번들 구조·Info.plist·icns(13개 타입) 확인. dmg/서명/실행은 macOS에서 사용자 확인 완료:
       터미널 창이 뜨지 않음, Dock 아이콘, 메뉴바 앱 이름, 데이터 경로(`~/Library/Application Support/com.kimtalmo.khannel`),
       `codesign -dv`(Signature=adhoc), dmg를 받은 것처럼 격리 속성을 붙였을 때 "그래도 열기" 흐름.
+  - **P2 Linux RPM (2026-10-29)**:
+    - `dist/rpm/khannel.spec`: Source0 = GitHub 태그 아카이브 형식(`khannel-<버전>/`), Source1 = vendor tarball
+      (`vendor/` + 이를 가리키는 `.cargo/config.toml` — gpui 등 git 의존성도 vendored-sources로 대체). `cargo build --frozen`.
+      `%{build_rustflags}`(Fedora 하드닝/프레임 포인터) + 디버그 정보는 `line-tables-only`(전체는 너무 큼), Cargo 프로필의
+      strip은 꺼서 rpm이 debuginfo/debugsource 패키지를 만들게 한다. `%check`에서 desktop-file-validate, appstreamcli, `cargo test`.
+      설치: `/usr/bin/khannel`, 데스크톱 항목, metainfo, hicolor 아이콘, `%license LICENSE THIRD_PARTY_NOTICES.md`.
+    - 자동 의존성에 안 잡히는 dlopen 라이브러리를 명시: `vulkan-loader`(wgpu), `libwayland-client`(gpui). libxcb/xkbcommon/openssl은
+      직접 링크라 자동. `ExclusiveArch: x86_64 aarch64`(vendor를 이 두 대상으로만 거름), `rust/cargo >= 1.98`(zed toolchain;
+      Fedora 44 updates에 1.99).
+    - `dist/rpm/make-srpm.sh`: Cargo 버전 = spec Version 확인 → `git archive HEAD` → `cargo vendor-filterer`(Fedora 패키지)로
+      Linux x86_64/aarch64만 남기고 tests/benches 제외 — 921MB/xz 78MB → 274MB/xz 33MB(SRPM 약 40MB). examples는 남긴다
+      (winnow가 `include_str!("../examples/…")`로 문서에 넣어 빼면 빌드 실패). tar는 정렬·mtime·소유자 고정.
+    - `.copr/Makefile`: COPR make_srpm용 — 도구 설치 후 `make-srpm.sh $(outdir)`.
+    - 검증: 로컬 `rpmbuild --rebuild --nodeps`(rustup 툴체인) 성공, `%check` 통과(테스트 59개).
+      사용자가 `mock -r fedora-44-x86_64 --rebuild`로 깨끗한 chroot 빌드 성공 확인(BuildRequires 충분).
 
 ---
 

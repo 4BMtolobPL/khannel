@@ -186,6 +186,8 @@ debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다.
 - `macos/package.sh` — Apple Silicon Mac에서 `khannel.app`과 `khannel-<버전>-macos-arm64.dmg`를 만든다
   (cargo-packager 필요: `cargo install cargo-packager --locked`, 설정은 `crates/khannel/Cargo.toml`의
   `[package.metadata.packager]`). 기본은 ad-hoc 서명, `macos/sign-app.sh` 참고
+- `rpm/khannel.spec`, `rpm/make-srpm.sh` — Fedora RPM. `make-srpm.sh`가 현재 커밋 + Linux 대상으로 거른 vendor
+  tarball로 SRPM을 만들고(`cargo-vendor-filterer` 필요), 빌드는 오프라인. COPR는 `.copr/Makefile`로 같은 스크립트를 쓴다
 
 ## 라이선스
 
