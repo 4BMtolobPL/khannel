@@ -209,39 +209,50 @@ impl Render for ServerModal {
                                 ),
                             )
                             .child(
-                                // TLS 체크박스
+                                // TLS 체크박스: 포트 칸과 같은 구조(라벨 자리 + 입력창과 같은 여백/테두리
+                                // 두께의 상자)로 만들어 체크박스와 문구가 포트 입력창의 세로 중앙에 온다.
+                                // (이전: 가로 줄이 stretch라 라벨+입력창 전체 높이의 중앙 → 위로 쏠림)
                                 div()
-                                    .id("tls")
-                                    .flex()
-                                    .items_center()
-                                    .gap_x(px(8.))
-                                    .pb(px(8.))
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                        this.set_tls(!this.tls, cx);
-                                    }))
+                                    .flex_none()
+                                    // 포트 라벨과 같은 높이의 보이지 않는 자리
+                                    .child(field_label("TLS", theme).opacity(0.))
                                     .child(
                                         div()
-                                            .size(px(16.))
-                                            .rounded(px(3.))
+                                            .id("tls")
+                                            .mt(px(4.))
+                                            .py(px(8.))
                                             .border_1()
-                                            .border_color(theme.border)
-                                            .when(self.tls, |d| {
-                                                d.bg(theme.accent)
-                                                    .child(
-                                                        div()
-                                                            .text_color(theme.text_inverse)
-                                                            .text_size(px(11.))
-                                                            .child("✓"),
-                                                    )
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                            })
-                                            .overflow_hidden(),
-                                    )
-                                    .child("TLS"),
+                                            .border_color(gpui::transparent_black())
+                                            .flex()
+                                            .items_center()
+                                            .gap_x(px(8.))
+                                            .text_sm()
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                                this.set_tls(!this.tls, cx);
+                                            }))
+                                            .child(
+                                                div()
+                                                    .size(px(16.))
+                                                    .rounded(px(3.))
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                                    .when(self.tls, |d| {
+                                                        d.bg(theme.accent)
+                                                            .child(
+                                                                div()
+                                                                    .text_color(theme.text_inverse)
+                                                                    .text_size(px(11.))
+                                                                    .child("✓"),
+                                                            )
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                    })
+                                                    .overflow_hidden(),
+                                            )
+                                            .child("TLS"),
+                                    ),
                             ),
                     )
                     .children(port_error.map(|text| error_text(text, theme)))

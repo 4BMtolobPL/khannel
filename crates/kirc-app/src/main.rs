@@ -141,6 +141,8 @@ fn main() {
         let model = cx.new(|cx| IrcModel::start(api.clone(), rx, cx));
         cx.set_global(MainModel(model.clone()));
         open_main_window(model, cx);
+        // 실행 직후 앱을 포그라운드로 가져온다 (macOS: 터미널/Finder에서 실행해도 창이 뒤에 깔리지 않게)
+        cx.activate(true);
     });
 }
 
