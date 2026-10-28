@@ -80,7 +80,11 @@ pub struct ServerState {
     runtime: Mutex<ServerRuntime>,
     config: Mutex<ServerConfig>,
     channels: Mutex<HashMap<ChannelId, ChannelState>>,
+    /// 서버에 실제로 등록된 현재 닉 (런타임 — 강제 변경 포함). 접속할 때마다 다시 맞춘다.
     current_nickname: Mutex<String>,
+    /// 사용자가 요청해 아직 반영되지 않은 새 닉. 이 닉으로 바뀌었을 때만 config에 저장한다
+    /// (NickServ 강제 변경 등 요청과 무관한 변경은 저장하지 않는다).
+    pending_nick: Mutex<Option<String>>,
 }
 
 impl ServerState {
@@ -90,6 +94,7 @@ impl ServerState {
             current_nickname: Mutex::new(config.nickname().to_string()),
             config: Mutex::new(config),
             channels: Mutex::new(HashMap::new()),
+            pending_nick: Mutex::new(None),
         }
     }
 
@@ -99,6 +104,7 @@ impl ServerState {
             current_nickname: Mutex::new(config.nickname().to_string()),
             config: Mutex::new(config),
             channels: Mutex::new(channels),
+            pending_nick: Mutex::new(None),
         }
     }
 
@@ -142,6 +148,30 @@ impl ServerState {
 
     pub fn set_current_nickname(&self, new_nick: &str) {
         *self.current_nickname.lock().unwrap() = new_nick.to_string();
+    }
+
+    /// 사용자가 닉 변경을 요청했다 (NICK 전송 직후).
+    pub fn request_nick_change(&self, new_nick: &str) {
+        *self.pending_nick.lock().unwrap() = Some(new_nick.to_string());
+    }
+
+    /// 닉 변경 요청이 실패했다 — 대기 중인 요청을 버린다.
+    pub fn cancel_nick_change(&self) {
+        self.pending_nick.lock().unwrap().take();
+    }
+
+    /// 내 닉이 `new_nick`으로 바뀌었다. 요청한 닉이면(대소문자 무시) config의 접속 닉도
+    /// 갱신하고 true를 돌려준다 — 호출자가 스냅샷을 저장한다. 요청과 무관한 변경이면 false.
+    pub fn complete_nick_change(&self, new_nick: &str) -> bool {
+        let mut pending = self.pending_nick.lock().unwrap();
+        let requested = pending
+            .as_deref()
+            .is_some_and(|nick| nick.eq_ignore_ascii_case(new_nick));
+        if requested {
+            pending.take();
+            self.config.lock().unwrap().set_nickname(new_nick);
+        }
+        requested
     }
 
     pub fn is_active(&self) -> bool {
@@ -296,6 +326,28 @@ mod tests {
         assert!(!server.is_channel_locked("#missing"));
         server.set_channel_locked("#missing", true);
         assert!(!server.is_channel_locked("#missing"));
+    }
+
+    #[test]
+    fn only_requested_nick_change_updates_config() {
+        let server = test_server();
+
+        // 요청 없는 (강제) 변경은 config를 바꾸지 않는다
+        assert!(!server.complete_nick_change("Guest123"));
+        assert_eq!(server.config().nickname(), "nick");
+
+        // 요청한 닉으로 바뀌면(대소문자 무시) config 갱신, 요청은 소진
+        server.request_nick_change("kim");
+        assert!(!server.complete_nick_change("Guest123"));
+        assert!(server.complete_nick_change("Kim"));
+        assert_eq!(server.config().nickname(), "Kim");
+        assert!(!server.complete_nick_change("Kim"));
+
+        // 실패로 취소된 요청은 이후 같은 닉으로 바뀌어도 저장하지 않는다
+        server.request_nick_change("lee");
+        server.cancel_nick_change();
+        assert!(!server.complete_nick_change("lee"));
+        assert_eq!(server.config().nickname(), "Kim");
     }
 
     #[test]

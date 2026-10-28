@@ -465,6 +465,21 @@ Tauri 버전과 나란히 실행해 다음을 검증:
       기록을 초기화하고, 닫힐 때(취소/Esc/성공) `server_id`를 해제해 닫힌 상태에서는 반응하지
       않는다. 단위 테스트 3건(`model::tests::nick_change_*`). GUI 동작 수동 확인 완료.
 
+12. **닉네임 변경이 저장되지 않음 (사용자 발견, 2026-10-28)** — Tauri 버전에서 상속.
+    닉은 `ServerConfig.nickname`(접속 등록·config.json 저장에 사용)과 `ServerState::current_nickname`
+    (런타임 판정용) 두 곳에 있는데, NICK 성공 시 `current_nickname`만 바뀌고 config는 그대로라
+    재시작하면 이전 닉으로 등록했다. 같은 세션의 재접속도 config 닉으로 등록하면서 런타임 닉/UI는
+    새 닉으로 남아, 내 JOIN·내 메시지·이후 NICK 판정이 모두 어긋났다.
+    - **해결**: ① `pending_nick` — `change_nickname` 전송 시 요청 닉을 기억하고, 내 닉이 그 닉으로
+      바뀌면(대소문자 무시) `ServerConfig::set_nickname` + 즉시 저장(`KircState::persist`). 요청과 무관한
+      변경(NickServ 강제 변경 등)은 저장하지 않는다(정책, 사용자 동의). 닉변 실패 시 요청을 버린다.
+      액터는 저장을 위해 `Weak<KircState>`를 받는다(순환 참조 방지).
+      ② 접속할 때마다 런타임 닉을 config 닉으로 되돌리고, 001(RPL_WELCOME)의 실제 등록 닉으로 확정한다.
+      달라지면 UI에 NICK 이벤트로 알려 `Server.nickname`도 맞춘다.
+    - 테스트: `state::server::tests::only_requested_nick_change_updates_config`, mock 서버 통합 테스트 3건
+      (요청한 변경 저장 + 재접속 시 새 닉 등록 / 강제 변경 미저장 / 001·재접속 닉 동기화).
+      저장 경로를 빼면 첫 통합 테스트가 실패함을 확인.
+
 **낮음 / Svelte 상속 / nit**
 
 - 닉 비교 대소문자 구분 (`core.rs` NICK, `model.rs` Join/Part/Nick) — IRC 닉은 대소문자 무시.

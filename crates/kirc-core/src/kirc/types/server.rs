@@ -33,4 +33,9 @@ impl ServerConfig {
     pub fn nickname(&self) -> &str {
         &self.nickname
     }
+
+    /// 접속(등록)에 쓸 닉네임 변경 — 사용자가 요청한 닉 변경이 반영됐을 때 갱신해 저장한다.
+    pub fn set_nickname(&mut self, nickname: &str) {
+        self.nickname = nickname.to_string();
+    }
 }

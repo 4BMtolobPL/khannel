@@ -53,7 +53,12 @@ impl KircManager {
             .get_server(server_id)
             .context("Server not found")?;
 
-        let actor = ServerActor::new(server_id, server.clone(), self.ui_sink.clone());
+        let actor = ServerActor::new(
+            server_id,
+            server.clone(),
+            self.ui_sink.clone(),
+            Arc::downgrade(&self.kirc_state),
+        );
         // spawn과 Connecting 전이를 원자적으로 수행 (ServerState::start_connecting 참고)
         if !server.start_connecting(|| {
             info!(server_id = %server_id, "Spawn server actor");

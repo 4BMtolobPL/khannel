@@ -166,6 +166,8 @@ impl KircApi {
             .get_server(payload.server_id)
             .context("Can't find server")?;
         server.send_command(ServerCommand::Nick(payload.new_nick.clone()))?;
+        // 서버가 이 닉으로 바꿔 주면(NICK 이벤트) 접속 닉으로 저장한다 — core::handle_message
+        server.request_nick_change(&payload.new_nick);
 
         // 닉네임 변경시 core::handle_message에서 자동으로 ui_event가 emit 됨
 
