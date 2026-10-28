@@ -154,8 +154,7 @@ fn main() {
 
     // 최신 업스트림에서는 Application::new()가 제거되어 gpui_platform::application() 사용.
     application().run(|cx| {
-    // 최신 업스트림에서는 Application::new()가 제거되어 gpui_platform::application() 사용.
-    application().run(|cx| {        // 1) IrcModel Entity: rx 이벤트 소비 → 상태 반영 (= ircService.ts 포팅)
+        // 1) IrcModel Entity: rx 이벤트 소비 → 상태 반영 (= ircService.ts 포팅)
         // 2) ChatApp Entity: render — 사이드바/메시지뷰/입력창
     });
 }
@@ -467,18 +466,35 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 **낮음 / Svelte 상속 / nit**
 
 - 닉 비교 대소문자 구분 (`core.rs` NICK, `model.rs` Join/Part/Nick) — IRC 닉은 대소문자 무시.
+  → **해결**: `model::nick_eq`(ASCII 대소문자 무시)로 Join/Part/Nick 자기 판정, MessageView의
+  내 메시지 표시·미확인 제외, 코어 NICK 자기 판정 모두 통일.
 - 나에게 온 DM이 target(내 닉) 이름 채널에 쌓이고 답장 불가 (`model.rs` UserMessage, 원본 동일).
+  → **해결**: `message_buffer_name` — target이 채널명(`#&+!`)이 아니고 내 닉이면 보낸 사람 닉
+  버퍼에 쌓는다. 그 버퍼에서 보내면 target이 상대 닉이 되고 에코도 같은 버퍼로 모인다.
+  DM 버퍼의 Leave는 서버 PART 없이 로컬에서만 닫는다. (DM 버퍼의 lock은 코어 채널 맵에 항목이
+  없어 영속되지 않는다 — UI 세션 한정.)
 - 붙여넣기 시 `\n`만 치환 (`input.rs` paste) — `\r`에서 irc 코덱이 잘라 서버엔 첫 줄만,
-  로컬 에코는 전체 표시.
+  로컬 에코는 전체 표시. → **해결**: CRLF/CR/LF 모두 공백으로 치환.
 - `is_shutting_down`이 Terminated를 막지 않음 (`manager.rs`) — 종료 후 `add_server` 시
   drain된 빈 맵으로 config.json 덮어쓰기 가능(이론상).
-  → **덮어쓰기는 해결 (2026-10-28, 6번)**: drain 이후 `save_snapshot`이 no-op. Terminated 상태의
-  명령 수락 자체(`is_shutting_down`)는 그대로.
+  → **덮어쓰기는 해결 (2026-10-28, 6번)**: drain 이후 `save_snapshot`이 no-op.
+  → **명령 수락도 해결**: `is_shutting_down`이 ShuttingDown/Terminated 모두 true.
 - ChannelJoinModal도 실패 시 피드백 없이 닫힘(미연결 서버) — ServerModal 항목과 동일 계열.
+  → **해결 (Phase 3 nit "ServerModal 제출 실패 시 즉시 닫힘" 포함)**: `IrcModel::join_channel`/
+  `add_server`가 `Result<(), String>`을 반환하고, 두 모달은 실패 시 닫지 않고 "채널 입장 실패: …"/
+  "연결 실패: …"를 표시한다.
 - Phase 3 잔여 그대로: render 내 `window.focus()` (`chat_app.rs`), `impl UiApi` 통째
   `#[allow(dead_code)]`, 모달/InputBar의 미사용 `api` 필드.
+  → **해결**: 자동 포커스는 `cx.defer_in`으로 렌더 이후 수행(실행 시점에 조건 재확인).
+  `impl UiApi`의 `#[allow(dead_code)]` 제거 + 미사용 `ui_sink()`/`is_channel_locked()` 삭제,
+  `cancel_connect()`는 서버 메뉴 Disconnect에 연결(Connecting 중이면 연결 취소 — 코어
+  `disconnect()`는 Connecting을 건드리지 않아 이전엔 아무 일도 없었다). 모달 3종/InputBar의
+  미사용 `api` 필드와 생성자 인자 제거.
 - ChatApp이 자식 뷰를 observe → 매번 트리 전체 재렌더 (`chat_app.rs`).
+  → **해결**: 자식 뷰 observe 3개 제거(자식은 각자 모델을 observe). 루트는 자동 포커스 재판단용
+  모델 observe만 유지. (gpui는 창 단위로 다시 그리므로 실제 비용 차이는 작고, 중복 정리 성격.)
 - 문서: Phase 2 예제 코드 `application().run(|cx| {` 중복, 오타("배파", "민감 민감", "ox련").
+  → **해결**: 예제 중복 줄 제거, "배포"/"민감 영역"/"관련"으로 수정.
 
 ### Phase 5 — 잔여 항목 및 정리
 
@@ -486,7 +502,7 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   존재하지 않는 기능(Show/Quit 메뉴)을 fork에 붙이는 것은 비권장(유지보수 리스크).
 - **네이티브 메뉴**: zed 프레임워크는 macOS 메뉴 지원. Linux는 상황 확인 후 대응.
 - 제거: `src/`, `src-tauri/`, `svelte.config.js`, `vite.config.js`, `tsconfig.json`,
-  `deno.lock`, `package.json` (svelte/ox련 도구들), README/CI 정합성 수정.
+  `deno.lock`, `package.json` (svelte 관련 도구들), README/CI 정합성 수정.
 - 수동: "IRC client built with Tauri" → "IRC client built with GPUI".
 
 ---
@@ -497,7 +513,7 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 |---|---|
 | GPUI pre-1.0, 버전 간 breaking change | git dep + lock 고정, 업데이트를 별도 PR로 격리 |
 | Linux X11/Wayland 성숙도(특히 Wayland) | Phase 2 첫 주에 헬로월드 + Phase 4에서 Wayland 집중 테스트 |
-| macOS 민감 민감(IME/한글 입력, 메뉴) | Phase 4 체크리스트 포함, 문제시 최대한 표준 컴포넌트 사용 |
+| macOS 민감 영역(IME/한글 입력, 메뉴) | Phase 4 체크리스트 포함, 문제시 최대한 표준 컴포넌트 사용 |
 | 스크롤/렌더 성능(대량 메시지) | GPUI list 기반 가상화, 필요 시 표시 범위 렌더만 |
 | 트레이/윈도우 숨김 등 네이티브 UX 축소 | 트레이는 유예로 명시, 개별 세부는 사용자 확인 |
 | 유지보수성(알 수 없는 패턴) | 화면을 작은 컴포넌트로 쪼개고, Phase별 커밋으로 격리 |
@@ -510,4 +526,4 @@ Tauri 버전과 나란히 실행해 다음을 검증:
 - GPUI 홈: https://gpui.rs/ (docs, examples)
 - 업스트림: https://github.com/zed-industries/zed.git (gpui crate; App/Entity/Render 패턴)
 - Zed 실사용 코드(최대 참고 유용): zed repo `crates/`
-- crates에 공식 배파 버전(gpui 0.2.x, macOS/Linux)도 존재하지만, 결정상 git dep 사용.
+- crates에 공식 배포 버전(gpui 0.2.x, macOS/Linux)도 존재하지만, 결정상 git dep 사용.

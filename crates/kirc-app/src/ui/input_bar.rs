@@ -3,32 +3,22 @@
 //! Svelte `+page.svelte`의 `<section>` 입력 영역 포팅. Phase 2의 키 네이밍 기반
 //! 간이 composer를 IME 지원 TextInput 엔티티로 교체했다 (MIGRATION.md Phase 3).
 
-use std::sync::Arc;
-
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, Focusable, IntoElement, ParentElement,
     Render, StatefulInteractiveElement, Styled, Window,
 };
 
-use crate::api::UiApi;
 use crate::model::IrcModel;
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 
 pub struct InputBar {
-    #[allow(dead_code)]
-    api: Arc<UiApi>,
     model: Entity<IrcModel>,
     input: Entity<TextInput>,
 }
 
 impl InputBar {
-    pub fn new(
-        api: Arc<UiApi>,
-        model: Entity<IrcModel>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(model: Entity<IrcModel>, window: &Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| TextInput::new(cx).with_placeholder("Type a message"));
 
         // Enter 제출 → 메시지 전송 + 입력 클리어 (Svelte sendMessage)
@@ -61,7 +51,7 @@ impl InputBar {
         })
         .detach();
 
-        Self { api, model, input }
+        Self { model, input }
     }
 
     /// composer 입력창 포커스 핸들 (ChatApp의 자동 포커스용)

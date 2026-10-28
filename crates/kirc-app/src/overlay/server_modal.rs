@@ -3,15 +3,12 @@
 //! Svelte `ServerModal.svelte`의 포팅. 검증은 제출 시 수행하고, 에러는
 //! 필드 아래 빨간 텍스트로 표시한다.
 
-use std::sync::Arc;
-
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::action::Dismiss;
-use crate::api::UiApi;
 use crate::model::IrcModel;
 use crate::overlay::modal::{
     error_text, field_label, modal_header, modal_overlay, modal_panel, DismissEvent,
@@ -22,25 +19,20 @@ use crate::ui::input::{TextInput, TextInputEvent};
 const DEFAULT_PORT: &str = "6697";
 
 pub struct ServerModal {
-    #[allow(dead_code)]
-    api: Arc<UiApi>,
     model: Entity<IrcModel>,
     host: Entity<TextInput>,
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
     tls: bool,
     errors: Vec<(&'static str, &'static str)>,
+    /// 연결 요청 자체가 실패한 경우의 사유 (모달을 닫지 않고 표시)
+    submit_error: Option<String>,
 }
 
 impl EventEmitter<DismissEvent> for ServerModal {}
 
 impl ServerModal {
-    pub fn new(
-        api: Arc<UiApi>,
-        model: Entity<IrcModel>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(model: Entity<IrcModel>, window: &Window, cx: &mut Context<Self>) -> Self {
         let host = cx.new(TextInput::new);
         let port = cx.new(|cx| TextInput::new(cx).with_text(DEFAULT_PORT));
         let nickname = cx.new(TextInput::new);
@@ -62,13 +54,13 @@ impl ServerModal {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
 
         Self {
-            api,
             model,
             host,
             port,
             nickname,
             tls: true,
             errors: Vec::new(),
+            submit_error: None,
         }
     }
 
@@ -81,6 +73,7 @@ impl ServerModal {
             .update(cx, |input, cx| input.clear(window, cx));
         self.tls = true;
         self.errors.clear();
+        self.submit_error = None;
         cx.notify();
     }
 
@@ -118,11 +111,20 @@ impl ServerModal {
             return;
         }
 
-        self.model.update(cx, |m, cx| {
+        let result = self.model.update(cx, |m, cx| {
             m.add_server(host, port.unwrap(), self.tls, nickname, cx)
         });
-        self.errors.clear();
-        cx.emit(DismissEvent);
+        match result {
+            Ok(()) => {
+                self.submit_error = None;
+                cx.emit(DismissEvent);
+            }
+            // 실패 시 모달을 유지하고 사유를 표시 (Svelte: invoke 실패 시 모달이 열린 채 남았다)
+            Err(e) => {
+                self.submit_error = Some(format!("연결 실패: {e}"));
+                cx.notify();
+            }
+        }
     }
 
     fn cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -263,6 +265,11 @@ impl Render for ServerModal {
                         ),
                     )
                     .children(nick_error.map(|text| error_text(text, theme)))
+                    .children(
+                        self.submit_error
+                            .as_deref()
+                            .map(|text| error_text(text, theme)),
+                    )
                     // Actions
                     .child(
                         div()

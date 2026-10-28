@@ -264,7 +264,12 @@ impl ServerActor {
             }
             Command::NICK(nickname) => {
                 // 1. 자기 자신인지 확인
-                if self.server.current_nickname() == source_nickname {
+                // IRC 닉은 대소문자를 구분하지 않는다
+                if self
+                    .server
+                    .current_nickname()
+                    .eq_ignore_ascii_case(&source_nickname)
+                {
                     self.server.set_current_nickname(&nickname);
                 }
 

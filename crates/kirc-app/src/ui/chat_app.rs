@@ -111,16 +111,14 @@ impl ChatApp {
         // 2) 자식 뷰/모달
         let sidebar = cx.new(|cx| Sidebar::new(model.clone(), cx));
         let message_view = cx.new(|cx| MessageView::new(model.clone(), cx));
-        let input_bar = cx.new(|cx| InputBar::new(api.clone(), model.clone(), window, cx));
-        let server_modal = cx.new(|cx| ServerModal::new(api.clone(), model.clone(), window, cx));
-        let channel_modal =
-            cx.new(|cx| ChannelJoinModal::new(api.clone(), model.clone(), window, cx));
-        let nick_modal = cx.new(|cx| ChangeNickModal::new(api.clone(), model.clone(), window, cx));
+        let input_bar = cx.new(|cx| InputBar::new(model.clone(), window, cx));
+        let server_modal = cx.new(|cx| ServerModal::new(model.clone(), window, cx));
+        let channel_modal = cx.new(|cx| ChannelJoinModal::new(model.clone(), window, cx));
+        let nick_modal = cx.new(|cx| ChangeNickModal::new(model.clone(), window, cx));
 
+        // 자식 뷰(사이드바/메시지 뷰/입력바)는 각자 모델을 observe해 스스로 갱신한다.
+        // 루트는 모델 변경 시 입력창 자동 포커스만 다시 판단하면 된다.
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
-        cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
-        cx.observe(&message_view, |_, _, cx| cx.notify()).detach();
-        cx.observe(&input_bar, |_, _, cx| cx.notify()).detach();
 
         // 사이드바 이벤트 → 모달/컨텍스트 메뉴 state 갱신
         cx.subscribe_in(
@@ -368,7 +366,9 @@ impl ChatApp {
                         let channel_name = state.channel_name.clone();
                         move |_, _, cx| {
                             chat.update(cx, |this, cx| this.close_menus(cx));
-                            model.update(cx, |m, cx| m.join_channel(server_id, &channel_name, cx));
+                            // 실패는 model에서 로깅된다 (메뉴엔 표시 영역이 없음)
+                            let _ = model
+                                .update(cx, |m, cx| m.join_channel(server_id, &channel_name, cx));
                         }
                     }),
             )
@@ -411,10 +411,17 @@ impl Render for ChatApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
 
-        // 입력창 자동 포커스 — 모달이 열려 있지 않을 때만 (모달 입력과 경쟁하지 않게)
+        // 입력창 자동 포커스 — 모달이 열려 있지 않을 때만 (모달 입력과 경쟁하지 않게).
+        // 렌더 중 포커스를 바꾸지 않고 렌더 이후로 미룬다(zed thread_view.rs 패턴).
+        // 미룬 시점에 조건을 다시 확인한다 — 그 사이 모달이 열렸을 수 있다.
         if !self.any_modal_open() && !self.input_bar.read(cx).input_focused(window, cx) {
-            let focus = self.input_bar.read(cx).input_focus_handle(cx);
-            window.focus(&focus, cx);
+            cx.defer_in(window, |this, window, cx| {
+                if this.any_modal_open() || this.input_bar.read(cx).input_focused(window, cx) {
+                    return;
+                }
+                let focus = this.input_bar.read(cx).input_focus_handle(cx);
+                window.focus(&focus, cx);
+            });
         }
 
         let server_menu = self.server_menu;

@@ -235,7 +235,10 @@ impl TextInput {
             return;
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+            // 한 줄 입력이므로 줄바꿈(CRLF/CR/LF)은 공백으로. `\r`이 남으면 irc 코덱이 거기서
+            // 메시지를 잘라 서버엔 첫 줄만 가고 로컬 에코는 전체가 보인다.
+            let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+            self.replace_text_in_range(None, &text, window, cx);
         }
     }
 

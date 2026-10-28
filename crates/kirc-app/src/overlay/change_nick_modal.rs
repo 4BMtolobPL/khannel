@@ -5,8 +5,6 @@
 //! - 성공: `nickSuccess` 감지 시 모달 닫기 + 캐시 삭제
 //! - 닫힐 때: nickErrors 삭제 + 입력 초기화
 
-use std::sync::Arc;
-
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window,
@@ -14,15 +12,12 @@ use gpui::{
 use kirc_core::kirc::types::ServerId;
 
 use crate::action::Dismiss;
-use crate::api::UiApi;
 use crate::model::IrcModel;
 use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 
 pub struct ChangeNickModal {
-    #[allow(dead_code)]
-    api: Arc<UiApi>,
     model: Entity<IrcModel>,
     /// 닉변 대상 서버 (Svelte: serverContextMenu.serverId). None이면 모달이 빈 상태.
     server_id: Option<ServerId>,
@@ -32,12 +27,7 @@ pub struct ChangeNickModal {
 impl EventEmitter<DismissEvent> for ChangeNickModal {}
 
 impl ChangeNickModal {
-    pub fn new(
-        api: Arc<UiApi>,
-        model: Entity<IrcModel>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(model: Entity<IrcModel>, window: &Window, cx: &mut Context<Self>) -> Self {
         let nick = cx.new(|cx| TextInput::new(cx).with_placeholder("새 닉네임"));
 
         cx.subscribe_in(
@@ -69,7 +59,6 @@ impl ChangeNickModal {
         .detach();
 
         Self {
-            api,
             model,
             server_id: None,
             nick,

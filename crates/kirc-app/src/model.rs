@@ -104,6 +104,28 @@ fn server_order(a: &Server, b: &Server) -> std::cmp::Ordering {
         .then_with(|| a.id.cmp(&b.id))
 }
 
+/// IRC 닉 비교 — 대소문자를 구분하지 않는다.
+pub fn nick_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// 채널 이름인지(IRC 채널 접두사 `#&+!`). 아니면 닉 대상(DM/query)이다.
+pub fn is_channel_name(name: &str) -> bool {
+    name.starts_with(['#', '&', '+', '!'])
+}
+
+/// UserMessage를 쌓을 버퍼 이름.
+/// 나에게 온 DM은 target이 내 닉이므로 보낸 사람 닉 버퍼에 쌓는다 → 그 버퍼에서 답장하면
+/// target이 상대 닉이 되고, 내 답장 에코(target=상대 닉)도 같은 버퍼로 모인다.
+fn message_buffer_name(target: &str, sender: &str, own_nickname: Option<&str>) -> String {
+    let to_me = !is_channel_name(target) && own_nickname.is_some_and(|own| nick_eq(target, own));
+    if to_me {
+        sender.to_string()
+    } else {
+        target.to_string()
+    }
+}
+
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
 }
@@ -296,6 +318,8 @@ impl IrcModel {
                 content,
                 timestamp,
             } => {
+                let own_nickname = self.servers.get(&server_id).map(|s| s.nickname.as_str());
+                let channel = message_buffer_name(&channel, &nick, own_nickname);
                 self.ensure_channel(server_id, &channel);
                 let channel_id = self.get_channel_id(&server_id, &channel);
                 self.add_message(
@@ -318,7 +342,7 @@ impl IrcModel {
                 self.ensure_channel(server_id, &channel);
                 let channel_id = self.get_channel_id(&server_id, &channel);
                 if let Some(server) = self.servers.get(&server_id).cloned() {
-                    let own_join = nick == server.nickname;
+                    let own_join = nick_eq(&nick, &server.nickname);
 
                     if let Some(channel) = self.channels.get_mut(&channel_id) {
                         channel.users.insert(nick.clone());
@@ -352,7 +376,7 @@ impl IrcModel {
                 let server = self.servers.get(&server_id).cloned();
                 if let Some(server) = server {
                     let channel_id = self.get_channel_id(&server_id, &channel);
-                    if nick == server.nickname {
+                    if nick_eq(&nick, &server.nickname) {
                         // 내가 나간 경우
                         if self.current_channel_id.as_ref() == Some(&channel_id) {
                             self.current_channel_id = None;
@@ -419,7 +443,7 @@ impl IrcModel {
                 new_nick,
             } => {
                 if let Some(server) = self.servers.get_mut(&server_id) {
-                    if server.nickname == old_nick {
+                    if nick_eq(&server.nickname, &old_nick) {
                         server.nickname = new_nick.clone();
                         // 모달로 요청한 변경일 때만 성공 처리 (강제 변경 등은 무시)
                         self.nick_change.on_own_nick_changed(server_id, &new_nick);
@@ -630,21 +654,31 @@ impl IrcModel {
         tls: bool,
         nickname: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<(), String> {
         let payload =
             kirc_core::kirc::commands::ConnectServerPayload::new(None, host, port, tls, nickname);
-        if let Err(e) = self.api.connect_server(payload) {
+        let result = self.api.connect_server(payload).map_err(|e| {
             tracing::warn!("connect_server failed: {}", e);
-        }
+            e.to_string()
+        });
         cx.notify();
+        result
     }
 
     /// 채널 입장 (ChannelJoinModal 제출, 채널 컨텍스트 메뉴 Join).
-    pub fn join_channel(&mut self, server_id: ServerId, channel: &str, cx: &mut Context<Self>) {
-        if let Err(e) = self.api.join_channel(server_id, channel) {
+    /// 실패 사유를 돌려준다 (ChannelJoinModal이 에러로 표시).
+    pub fn join_channel(
+        &mut self,
+        server_id: ServerId,
+        channel: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let result = self.api.join_channel(server_id, channel).map_err(|e| {
             tracing::warn!("join_channel failed: {}", e);
-        }
+            e.to_string()
+        });
         cx.notify();
+        result
     }
 
     /// 닉변 실패 에러 조회 (ChangeNickModal 표시용).
@@ -821,6 +855,17 @@ impl IrcModel {
         let Some(channel) = self.channels.get(channel_id) else {
             return;
         };
+
+        // DM(query) 버퍼는 서버에 PART할 대상이 없으므로 로컬에서만 닫는다
+        if !is_channel_name(&channel.name) {
+            if self.current_channel_id.as_deref() == Some(channel_id) {
+                self.current_channel_id = None;
+            }
+            self.channels.remove(channel_id);
+            cx.notify();
+            return;
+        }
+
         let payload =
             kirc_core::kirc::commands::ChannelPayload::new(channel.server_id, channel.name.clone());
 
@@ -831,8 +876,18 @@ impl IrcModel {
     }
 
     // 서버 컨텍스트 메뉴(Disconnect)에서 사용.
+    // 연결 시도 중(Connecting)이면 연결을 취소한다 — 코어 disconnect는 Connecting을 건드리지 않는다.
     pub fn disconnect_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
-        if let Err(e) = self.api.disconnect_server(server_id) {
+        let connecting = self
+            .servers
+            .get(&server_id)
+            .is_some_and(|s| s.status == UiServerStatus::Connecting);
+        let result = if connecting {
+            self.api.cancel_connect(server_id)
+        } else {
+            self.api.disconnect_server(server_id)
+        };
+        if let Err(e) = result {
             tracing::warn!("disconnect_server failed: {}", e);
         }
         cx.notify();
@@ -897,6 +952,23 @@ mod tests {
             status: UiServerStatus::Disconnected,
             server_messages: Vec::new(),
         }
+    }
+
+    #[test]
+    fn nick_comparison_is_case_insensitive() {
+        assert!(nick_eq("Kim", "kim"));
+        assert!(!nick_eq("kim", "kimm"));
+    }
+
+    #[test]
+    fn dm_to_me_goes_to_sender_buffer() {
+        // 상대가 나에게 보낸 DM → 상대 닉 버퍼
+        assert_eq!(message_buffer_name("Kim", "lee", Some("kim")), "lee");
+        // 내가 상대에게 보낸 DM의 에코 → 같은 상대 닉 버퍼
+        assert_eq!(message_buffer_name("lee", "kim", Some("kim")), "lee");
+        // 채널 메시지는 그대로
+        assert_eq!(message_buffer_name("#rust", "lee", Some("kim")), "#rust");
+        assert!(is_channel_name("&local") && !is_channel_name("lee"));
     }
 
     #[test]

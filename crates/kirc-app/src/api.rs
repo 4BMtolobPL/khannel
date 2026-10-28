@@ -52,9 +52,7 @@ pub fn build_kirc(ui_sink: EventSender, state: KircState) -> KircApi {
     KircApi::new(manager)
 }
 
-// Tauri 시절 #[tauri::command] 명령들을 평면화한 facade. 일부는 Phase 3(모달/컨텍스트
-// 메뉴)까지 UI를 갖지 않아 미사용 예약이다.
-#[allow(dead_code)]
+// Tauri 시절 #[tauri::command] 명령들을 평면화한 facade.
 impl UiApi {
     pub fn new(rt: Arc<tokio::runtime::Runtime>, kirc_api: KircApi, ui_sink: EventSender) -> Self {
         Self {
@@ -63,10 +61,6 @@ impl UiApi {
             ui_sink,
             shutdown_started: AtomicBool::new(false),
         }
-    }
-
-    pub fn ui_sink(&self) -> &EventSender {
-        &self.ui_sink
     }
 
     /// UI 초기화: 스냅샷 서버 자동 연결 시작
@@ -124,11 +118,6 @@ impl UiApi {
     pub fn unlock_channel(&self, payload: &ChannelPayload) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
         self.kirc_api.unlock_channel(payload, &self.ui_sink)
-    }
-
-    pub fn is_channel_locked(&self, payload: &ChannelPayload) -> Result<bool, MyCustomError> {
-        let _guard = self.rt.enter();
-        self.kirc_api.is_channel_locked(payload)
     }
 
     pub fn change_nickname(&self, payload: &ChangeNickPayload) -> Result<(), MyCustomError> {

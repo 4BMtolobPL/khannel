@@ -59,7 +59,10 @@ fn unread_from(
         .get(start..)?
         .iter()
         .any(|message| {
-            let is_own = own_nickname.is_some() && message.nickname.as_deref() == own_nickname;
+            let is_own = matches!(
+                (own_nickname, message.nickname.as_deref()),
+                (Some(own), Some(nick)) if crate::model::nick_eq(own, nick)
+            );
             message.kind == MessageType::User && !is_own
         })
         .then_some(start)
@@ -247,7 +250,10 @@ impl MessageView {
         let row = match message.kind {
             MessageType::User => {
                 // Svelte: 내 닉네임이면 `< {nick}>`, 아니면 `<@{nick}>`
-                let is_own = own_nickname.as_ref() == message.nickname.as_ref();
+                let is_own = matches!(
+                    (own_nickname, &message.nickname),
+                    (Some(own), Some(nick)) if crate::model::nick_eq(own, nick)
+                );
                 let nick = message.nickname.clone().unwrap_or_default();
                 let label = if is_own {
                     format!("< {nick}>")

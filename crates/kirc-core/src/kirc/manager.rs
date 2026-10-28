@@ -26,12 +26,12 @@ impl KircManager {
         self.app_state.store(state.as_u8(), Ordering::Release);
     }
 
+    /// 종료 중이거나 종료가 끝났으면 true — 이후의 연결/서버 추가 명령을 거부한다.
     fn is_shutting_down(&self) -> bool {
-        if let Some(state) = self.app_state() {
-            state == AppState::ShuttingDown
-        } else {
-            false
-        }
+        matches!(
+            self.app_state(),
+            Some(AppState::ShuttingDown | AppState::Terminated)
+        )
     }
 
     fn complete_shutdown(&self) {

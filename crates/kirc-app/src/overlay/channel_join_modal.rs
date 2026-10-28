@@ -2,37 +2,27 @@
 //!
 //! Svelte `ChannelJoinModal.svelte`의 포팅.
 
-use std::sync::Arc;
-
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::action::Dismiss;
-use crate::api::UiApi;
 use crate::model::IrcModel;
 use crate::overlay::modal::{error_text, modal_overlay, modal_panel, DismissEvent};
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
 
 pub struct ChannelJoinModal {
-    #[allow(dead_code)]
-    api: Arc<UiApi>,
     model: Entity<IrcModel>,
     name: Entity<TextInput>,
-    error: Option<&'static str>,
+    error: Option<String>,
 }
 
 impl EventEmitter<DismissEvent> for ChannelJoinModal {}
 
 impl ChannelJoinModal {
-    pub fn new(
-        api: Arc<UiApi>,
-        model: Entity<IrcModel>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(model: Entity<IrcModel>, window: &Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| TextInput::new(cx).with_placeholder("#channel"));
 
         cx.subscribe_in(
@@ -49,7 +39,6 @@ impl ChannelJoinModal {
         cx.observe(&model, |_, _, cx| cx.notify()).detach();
 
         Self {
-            api,
             model,
             name,
             error: None,
@@ -82,7 +71,7 @@ impl ChannelJoinModal {
         let name = self.name.read(cx).text().trim().to_string();
 
         if let Some(error) = self.validate(&name) {
-            self.error = Some(error);
+            self.error = Some(error.to_string());
             cx.notify();
             return;
         }
@@ -90,9 +79,17 @@ impl ChannelJoinModal {
         let server_id = self.model.read(cx).current_server_id().copied();
         let Some(server_id) = server_id else { return };
 
-        self.model
-            .update(cx, |m, cx| m.join_channel(server_id, &name, cx));
-        cx.emit(DismissEvent);
+        // 실패(예: 서버 미연결) 시 모달을 유지하고 사유를 표시
+        match self
+            .model
+            .update(cx, |m, cx| m.join_channel(server_id, &name, cx))
+        {
+            Ok(()) => cx.emit(DismissEvent),
+            Err(e) => {
+                self.error = Some(format!("채널 입장 실패: {e}"));
+                cx.notify();
+            }
+        }
     }
 
     fn cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -133,7 +130,7 @@ impl Render for ChannelJoinModal {
                             })
                             .child(self.name.clone()),
                     )
-                    .children(self.error.map(|text| error_text(text, theme)))
+                    .children(self.error.as_deref().map(|text| error_text(text, theme)))
                     .child(
                         div()
                             .flex()
