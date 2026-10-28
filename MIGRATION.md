@@ -643,7 +643,19 @@ Tauri 버전과 나란히 실행해 다음을 검증:
       (aarch64-apple-darwin, x86_64-unknown-linux-gnu)만, 빌드/개발 의존성 제외. 의존성 666개 라이선스 집계 결과 모두
       허용적(GPL/LGPL은 OR 대안으로만 존재, MPL-2.0 3개는 미수정 사용). gpui 등 zed 크레이트는 `publish = false`라
       cargo-about의 private 무시 옵션을 쓰면 누락되므로 쓰지 않는다(우리 크레이트도 목록에 남음 — MIT라 무해).
-    - macOS 아이콘에 Apple 템플릿 같은 옅은 그림자 추가(사용자 동의). AppStream metainfo의 릴리스 날짜는 태그 직전에 실제 날짜로 갱신. (GitHub 저장소 설명 —
+    - macOS 아이콘에 Apple 템플릿 같은 옅은 그림자 추가(사용자 동의). AppStream metainfo의 릴리스 날짜는 태그 직전에 실제 날짜로 갱신.
+  - **다음 작업 (P0 완료 시점, 2026-10-29)** — 이어서 할 순서:
+    1. **P1 macOS**: cargo-packager 설정(`[package.metadata.packager]` 또는 `Packager.toml`)으로 `khannel.app` +
+       `khannel-1.0.0-macos-arm64.dmg`, ad-hoc 서명. Developer ID 서명/공증은 환경변수가 있을 때만(지금은 비활성).
+       확인: 터미널 창이 뜨지 않음, Dock 아이콘, 메뉴바 앱 이름, 데이터 경로.
+    2. **P2 Linux RPM**: `dist/rpm/khannel.spec` + `.copr/Makefile`(make_srpm에서 `cargo vendor`로 의존성 묶음) →
+       로컬 `rpmbuild`/`mock`로 빌드·`dnf install/remove` 검증.
+    3. **P5 릴리스 CI**: `release.yml` — `v*` 태그 → macOS arm64 dmg + Fedora RPM을 GitHub Release 초안에 업로드.
+    4. **P3 COPR**: `copr-cli build is2ogc3tc2/khannel <SRPM>` (대상 fedora-44/45/rawhide x86_64), 이후 자동화 검토.
+    5. **P4 Homebrew Cask**: `4BMtolobPL/homebrew-tap`의 `Casks/khannel.rb` + 릴리스 게시 시 자동 갱신
+       (fine-grained PAT `HOMEBREW_TAP_TOKEN` 필요 — 그때 생성 안내).
+    6. **P6 문서**: README 설치 안내(`brew install --cask`, Gatekeeper "그래도 열기", `dnf copr enable`).
+    - 태그 직전: metainfo `<release date>`를 실제 날짜로, 의존성이 바뀌었으면 `THIRD_PARTY_NOTICES.md` 재생성. (GitHub 저장소 설명 —
   사용자가 직접 변경)
 
 ---
