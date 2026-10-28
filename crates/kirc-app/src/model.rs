@@ -919,7 +919,11 @@ impl IrcModel {
             kirc_core::kirc::commands::ChangeNickPayload::new(server_id, new_nick.to_string());
         match self.api.change_nickname(&payload) {
             Ok(()) => self.nick_change.request(server_id, new_nick),
-            Err(e) => tracing::warn!("change_nickname failed: {}", e),
+            Err(e) => {
+                // 모달이 에러 영역에 표시한다 (예: 연결 중이라 바꿀 수 없음)
+                tracing::warn!("change_nickname failed: {}", e);
+                self.nick_errors.insert(server_id, e.to_string());
+            }
         }
         cx.notify();
     }

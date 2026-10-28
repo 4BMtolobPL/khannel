@@ -150,6 +150,14 @@ impl ServerState {
         *self.current_nickname.lock().unwrap() = new_nick.to_string();
     }
 
+    /// 연결되어 있지 않을 때의 닉 변경: 접속 닉(config)과 런타임 닉을 함께 바꾼다.
+    /// 다음 접속부터 이 닉으로 등록한다.
+    pub fn set_nickname(&self, nickname: &str) {
+        self.config.lock().unwrap().set_nickname(nickname);
+        self.set_current_nickname(nickname);
+        self.cancel_nick_change();
+    }
+
     /// 사용자가 닉 변경을 요청했다 (NICK 전송 직후).
     pub fn request_nick_change(&self, new_nick: &str) {
         *self.pending_nick.lock().unwrap() = Some(new_nick.to_string());

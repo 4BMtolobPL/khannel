@@ -1,7 +1,7 @@
 use crate::error::MyCustomError;
 use crate::kirc::event::{emit_channel_lock_changed, EventSender};
 use crate::kirc::manager::KircManager;
-use crate::kirc::types::{ServerCommand, ServerId};
+use crate::kirc::types::{ServerCommand, ServerId, ServerStatus};
 use anyhow::Context;
 use std::sync::Arc;
 
@@ -165,6 +165,19 @@ impl KircApi {
         let server = state
             .get_server(payload.server_id)
             .context("Can't find server")?;
+
+        // 연결되어 있지 않으면(접속 실패 — 닉 선점 등 — 포함) 서버에 보낼 수 없으므로
+        // 접속 닉을 직접 바꾼다 (필요하면 다시 연결)
+        if !matches!(
+            server.status(),
+            ServerStatus::Connected | ServerStatus::Registering
+        ) {
+            return self
+                .manager
+                .change_nickname_offline(payload.server_id, &payload.new_nick)
+                .map_err(MyCustomError::Anyhow);
+        }
+
         server.send_command(ServerCommand::Nick(payload.new_nick.clone()))?;
         // 서버가 이 닉으로 바꿔 주면(NICK 이벤트) 접속 닉으로 저장한다 — core::handle_message
         server.request_nick_change(&payload.new_nick);

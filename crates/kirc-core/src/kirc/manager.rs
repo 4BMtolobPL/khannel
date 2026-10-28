@@ -1,6 +1,8 @@
 use crate::kirc::core::ServerActor;
 use crate::kirc::event::EventSender;
-use crate::kirc::event::{emit_server_added, emit_server_status};
+use crate::kirc::event::{
+    emit_server_added, emit_server_status, emit_system_message, emit_ui_event,
+};
 use crate::kirc::state::app::AppState;
 use crate::kirc::state::kirc::KircState;
 use crate::kirc::types::server::ServerConfig;
@@ -116,6 +118,52 @@ impl KircManager {
         } else {
             Err(anyhow!("Server not found"))
         }
+    }
+
+    /// 연결되어 있지 않은 서버의 닉 변경: 서버에 NICK을 보낼 수 없으므로 접속 닉을 바로 바꿔
+    /// 저장한다. 접속에 실패한 상태(Failed — 예: 닉 선점)였다면 새 닉으로 바로 다시 연결한다.
+    /// 사용자가 직접 끊은 상태(Disconnected)는 다시 연결하지 않고 다음 접속부터 적용한다.
+    pub fn change_nickname_offline(
+        &self,
+        server_id: ServerId,
+        new_nick: &str,
+    ) -> anyhow::Result<()> {
+        let server = self
+            .kirc_state
+            .get_server(server_id)
+            .context("Can't find server")?;
+        let status = server.status();
+        if !matches!(status, ServerStatus::Disconnected | ServerStatus::Failed) {
+            return Err(anyhow!(
+                "서버에 연결하는 중에는 닉네임을 바꿀 수 없습니다. 잠시 후 다시 시도하세요"
+            ));
+        }
+
+        let old_nick = server.current_nickname();
+        server.set_nickname(new_nick);
+        self.kirc_state.persist();
+        info!(server_id = %server_id, new_nick = %new_nick, "Nickname changed while offline");
+
+        // UI의 Server.nickname / 닉변 모달 성공 처리는 NICK 이벤트로 맞춘다
+        emit_ui_event(&self.ui_sink)
+            .nick(server_id, old_nick, new_nick.to_string())
+            .emit();
+
+        if status == ServerStatus::Failed {
+            emit_system_message(
+                &self.ui_sink,
+                server_id,
+                &format!("닉네임을 '{new_nick}'(으)로 바꿔 다시 연결합니다."),
+            );
+            self.connect_server(Some(server_id), server.config())?;
+        } else {
+            emit_system_message(
+                &self.ui_sink,
+                server_id,
+                &format!("닉네임을 '{new_nick}'(으)로 바꿨습니다. 다음 접속부터 적용됩니다."),
+            );
+        }
+        Ok(())
     }
 
     pub fn cancel_connect(&self, server_id: ServerId) -> anyhow::Result<()> {

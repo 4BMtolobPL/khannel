@@ -125,6 +125,8 @@ impl ServerActor {
         mut stream: ClientStream,
         mut rx: UnboundedReceiver<ServerCommand>,
     ) -> SessionOutcome {
+        // 등록 단계에서 닉이 거부될 때 시도한 대체 닉 수 (`alt_nick`)
+        let mut alt_attempts = 0;
         loop {
             tokio::select! {
                 // IRC 서버에서 오는 메시지
@@ -138,11 +140,27 @@ impl ServerActor {
                             // alt_nicks가 비어 있어 irc crate가 더 시도할 닉네임이 없는 경우.
                             debug!(event = "irc_stream_error", error = "NoUsableNick", "IRC stream error, No usable nick");
 
-                            // 등록 단계: 등록이 영영 끝나지 않으므로(Registering 정지) 세션을 실패 처리한다.
+                            // 등록 단계: 대체 닉(`닉_`, `닉__`, …)으로 다시 시도하고, 모두 거부되면
+                            // 등록이 영영 끝나지 않으므로(Registering 정지) 세션을 실패 처리한다.
+                            // irc crate의 alt_nicks는 등록 이후의 닉 변경 실패에도 대체 닉을 보내므로
+                            // 쓰지 않고, 등록 단계에서만 직접 보낸다.
                             if self.server.status() == ServerStatus::Registering {
                                 let nickname = self.server.config().nickname().to_string();
+                                if alt_attempts < MAX_ALT_NICKS {
+                                    alt_attempts += 1;
+                                    let alt = alt_nick(&nickname, alt_attempts);
+                                    info!(event = "alt_nick", nickname = %nickname, alt = %alt);
+                                    if let Err(e) = client.send(Command::NICK(alt)) {
+                                        error!("Failed to send alt nick: {e}");
+                                    }
+                                    continue;
+                                }
+                                let alts = (1..=MAX_ALT_NICKS)
+                                    .map(|n| alt_nick(&nickname, n))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 return SessionOutcome::Failed(format!(
-                                    "닉네임 '{nickname}'을(를) 사용할 수 없습니다 (이미 사용 중이거나 유효하지 않음)"
+                                    "닉네임 '{nickname}'과(와) 대체 닉({alts})을 모두 사용할 수 없습니다 (이미 사용 중이거나 유효하지 않음). 닉네임을 바꿔 다시 연결하세요"
                                 ));
                             }
 
@@ -346,6 +364,19 @@ impl ServerActor {
                 // 001의 첫 인자는 서버가 실제로 등록한 내 닉 (길이 제한으로 잘린 경우 등 반영)
                 if let Some(registered) = args.first().filter(|nick| !nick.is_empty()) {
                     self.sync_own_nick(registered);
+
+                    // 대체 닉(또는 서버가 바꾼 닉)으로 등록됐으면 서버 버퍼에 안내한다.
+                    // 접속 닉(config)은 그대로라 다음 접속도 원래 닉으로 먼저 시도한다.
+                    let config_nick = self.server.config().nickname().to_string();
+                    if !registered.eq_ignore_ascii_case(&config_nick) {
+                        emit_system_message(
+                            &self.ui_sink,
+                            self.server_id,
+                            &format!(
+                                "닉네임 '{config_nick}' 대신 '{registered}'(으)로 접속했습니다."
+                            ),
+                        );
+                    }
                 }
 
                 // 기존 채널이 존재하면 연결
@@ -400,6 +431,14 @@ enum SessionOutcome {
     Closed,
     /// 세션을 계속할 수 없는 실패 (예: 등록 단계 닉네임 거부). 사유는 Failed 상태에 기록된다.
     Failed(String),
+}
+
+/// 등록 단계에서 닉이 거부될 때 시도할 대체 닉 수 (`닉_`, `닉__`, `닉___`)
+const MAX_ALT_NICKS: usize = 3;
+
+/// `n`번째 대체 닉 — 원래 닉 뒤에 언더바를 `n`개 붙인다 (사용자 결정).
+fn alt_nick(nickname: &str, n: usize) -> String {
+    format!("{nickname}{}", "_".repeat(n))
 }
 
 /// QUIT 전송 후 서버가 연결을 닫을 때까지 대기하는 최대 시간.
@@ -902,5 +941,147 @@ mod quit_tests {
         wait_for_status(&mut h.rx, h.server_id, ServerStatus::Disconnected).await;
         h.connect();
         assert_eq!(h.next_nick_event().await, ("nick_".into(), "nick".into()));
+    }
+
+    // ==================== 닉 선점 대응 (대체 닉 / 연결 없이 닉 변경) ====================
+
+    /// 등록 시 `taken`에 있는 닉은 433으로 거부하는 mock IRC 서버 (연결 여러 번 수락).
+    async fn spawn_taken_nick_mock(
+        taken: &'static [&'static str],
+    ) -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = lines.clone();
+
+        tokio::spawn(async move {
+            let mut conn = 0;
+            while let Ok((socket, _)) = listener.accept().await {
+                let (read, mut write) = socket.into_split();
+                let mut reader = BufReader::new(read).lines();
+                let mut nick: Option<String> = None;
+                let mut user = false;
+                let mut registered = false;
+
+                while let Ok(Some(line)) = reader.next_line().await {
+                    log.lock().unwrap().push(format!("{conn}:{line}"));
+                    if line.starts_with("QUIT") {
+                        let _ = write.write_all(b"ERROR :Closing link\r\n").await;
+                        break;
+                    }
+                    if let Some(requested) = line.strip_prefix("NICK ") {
+                        if taken.contains(&requested) {
+                            let reply =
+                                format!(":mock 433 * {requested} :Nickname is already in use\r\n");
+                            let _ = write.write_all(reply.as_bytes()).await;
+                        } else {
+                            nick = Some(requested.to_string());
+                        }
+                    }
+                    if line.starts_with("USER") {
+                        user = true;
+                    }
+                    if !registered && user {
+                        if let Some(nick) = &nick {
+                            registered = true;
+                            let reply = format!(":mock 001 {nick} :Welcome\r\n");
+                            let _ = write.write_all(reply.as_bytes()).await;
+                        }
+                    }
+                }
+                conn += 1;
+            }
+        });
+
+        (port, lines)
+    }
+
+    /// 다음 서버 버퍼(System) 메시지를 기다린다
+    async fn next_system_message(rx: &mut UnboundedReceiver<UiEvent>) -> String {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::SystemMessage(p)) => return p.message,
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no system message")
+    }
+
+    /// 접속 닉이 선점돼 있으면 `닉_`으로 접속한다. 대체 닉은 저장하지 않는다.
+    #[tokio::test]
+    async fn taken_nick_falls_back_to_underscore_alt() {
+        let (port, lines) = spawn_taken_nick_mock(&["nick"]).await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        assert_eq!(h.next_nick_event().await, ("nick".into(), "nick_".into()));
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+
+        assert_eq!(h.server().current_nickname(), "nick_");
+        assert_eq!(h.server().config().nickname(), "nick");
+        assert_eq!(h.saved_nick(), None);
+        assert!(lines.lock().unwrap().contains(&"0:NICK nick_".to_string()));
+    }
+
+    /// 대체 닉(`닉_`~`닉___`)까지 모두 선점돼 있으면 사유와 함께 Failed.
+    #[tokio::test]
+    async fn all_alt_nicks_taken_fails_with_reason() {
+        let (port, _lines) = spawn_taken_nick_mock(&["nick", "nick_", "nick__", "nick___"]).await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Failed).await;
+        let reason = h.server().last_error().unwrap();
+        assert!(reason.contains("nick___"), "{reason}");
+    }
+
+    /// 연결 안 된(Disconnected) 서버에서 닉을 바꾸면 접속 닉을 바로 저장하고, 다시 연결하지 않는다.
+    #[tokio::test]
+    async fn offline_nick_change_saves_without_connecting() {
+        let (port, lines) = spawn_taken_nick_mock(&[]).await;
+        let mut h = NickHarness::new(port);
+
+        let payload = crate::kirc::commands::ChangeNickPayload::new(h.server_id, "newnick".into());
+        h.api.change_nickname(&payload).unwrap();
+
+        assert_eq!(h.next_nick_event().await, ("nick".into(), "newnick".into()));
+        assert_eq!(h.server().config().nickname(), "newnick");
+        assert_eq!(h.saved_nick().as_deref(), Some("newnick"));
+        assert_eq!(h.server().status(), ServerStatus::Disconnected);
+        assert!(lines.lock().unwrap().is_empty(), "should not connect");
+    }
+
+    /// 닉 선점으로 접속에 실패(Failed)한 서버에서 닉을 바꾸면 새 닉으로 바로 다시 연결한다.
+    /// (이전: 연결이 없어 "Server not connected"로 닉을 바꿀 수 없었다)
+    #[tokio::test]
+    async fn offline_nick_change_reconnects_failed_server() {
+        let (port, lines) = spawn_taken_nick_mock(&["nick", "nick_", "nick__", "nick___"]).await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Failed).await;
+
+        let payload = crate::kirc::commands::ChangeNickPayload::new(h.server_id, "free".into());
+        h.api.change_nickname(&payload).unwrap();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+
+        assert_eq!(h.server().current_nickname(), "free");
+        assert_eq!(h.saved_nick().as_deref(), Some("free"));
+        assert!(lines.lock().unwrap().contains(&"1:NICK free".to_string()));
+    }
+
+    /// 대체 닉으로 접속하면 서버 버퍼에 안내를 남긴다.
+    #[tokio::test]
+    async fn alt_nick_connection_is_announced() {
+        let (port, _lines) = spawn_taken_nick_mock(&["nick"]).await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        let message = next_system_message(&mut h.rx).await;
+        assert!(message.contains("'nick_'"), "{message}");
     }
 }
