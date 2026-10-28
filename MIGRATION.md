@@ -372,6 +372,10 @@ Tauri 버전과 나란히 실행해 다음을 검증:
    닫힘은 `on_mouse_down_out`뿐이라 Change Nickname 외 항목은 클릭 후에도 메뉴가 남는다.
    수정: 메뉴 컨테이너 `.occlude()` + 각 항목에서 `close_menus`. 모달 스크림(`modal.rs`)도
    stop_propagation 6개를 `.occlude()`로 교체(뒤쪽 hover/스크롤 휠까지 차단).
+   - **수정 (2026-10-28)**: `context_menu_container`와 `modal_overlay` 스크림에 `.occlude()`
+     (스크림의 stop_propagation 리스너 6개 제거). 메뉴 항목 7종은 클릭 시 `close_menus` 후
+     액션 실행(Change Nickname은 `open_nick_modal`이 닫음). 빌드/clippy/테스트 통과,
+     GUI 동작(아래 row 미발화·hover 차단·항목 클릭 후 닫힘·모달 뒤 스크롤 차단) 수동 확인 완료.
 4. **접속 시 닉 중복이면 Registering에서 정지** (`core.rs` `NoUsableNick` 분기).
    `alt_nicks: vec![]`이라 등록 단계 433/432는 `NoUsableNick`이 되는데, 코어는 이를
    "닉변 실패"로만 처리하고 계속 진행 → 등록이 끝나지 않고, 에러는 `nick_errors`에만

@@ -37,17 +37,11 @@ pub fn modal_overlay(
             .items_center()
             .justify_center()
             .on_action(on_dismiss)
-            // 스크림 아래의 인터랙션 차단. gpui는 겹친 서브트리에 마우스 이벤트를
-            // z-order 순으로 각각 발행하므로, 리스너만 붙은 노드가 전파를 멈춰야
-            // 뒤쪽(모달 아래) 요소가 이벤트를 받지 않는다 (Svelte: 스크림이
-            // pointer-events로 뒤를 가리는 것과 동일). 패널 자식은 더 위(z)에서
-            // 먼저 받으므로 모달 내 조작은 영향받지 않는다.
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(gpui::MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(gpui::MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+            // 스크림 아래의 인터랙션 차단 (Svelte: 스크림이 pointer-events로 뒤를 가리는 것과
+            // 동일). occlude 없이는 gpui가 겹친 하위 hitbox도 hovered로 판정해 뒤쪽 요소가
+            // 클릭/hover/스크롤 휠을 받는다. 패널 자식은 스크림보다 위(z)에서 hit test되므로
+            // 모달 내 조작은 영향받지 않는다.
+            .occlude()
             .child(panel),
     )
 }

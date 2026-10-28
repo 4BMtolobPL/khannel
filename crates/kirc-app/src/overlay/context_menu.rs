@@ -12,6 +12,10 @@ use crate::theme::Theme;
 pub fn context_menu_container(theme: Theme) -> gpui::Stateful<Div> {
     div()
         .id("context-menu")
+        // 메뉴 아래(사이드바 row 등)의 hitbox가 hovered로 판정되지 않게 막는다.
+        // gpui는 occlude가 없으면 겹친 하위 hitbox도 hovered로 보므로, 항목 클릭이
+        // 아래 row의 on_click까지 발화시키고 hover 스타일도 켜진다.
+        .occlude()
         .min_w(px(192.))
         .py(px(6.))
         .rounded(px(8.))

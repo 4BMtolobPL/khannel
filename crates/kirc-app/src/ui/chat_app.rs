@@ -248,6 +248,9 @@ impl ChatApp {
     }
 
     // ── 서버 컨텍스트 메뉴 (Svelte: Connect / Disconnect / Copy Server Name / Change Nickname) ──
+    //
+    // 항목 클릭 시 메뉴를 닫는다 (Svelte: window click listener가 메뉴 안 클릭에도 닫았다).
+    // 모델 액션은 메뉴를 닫은 뒤 실행한다.
 
     fn render_server_menu(
         &mut self,
@@ -257,6 +260,7 @@ impl ChatApp {
         let theme = Theme::current(cx);
         let model = self.model.clone();
         let chat = cx.entity();
+        let id = state.server_id;
 
         let menu = context_menu_container(theme)
             // 메뉴 밖 클릭 → 닫기 (Svelte: window click listener 대체)
@@ -272,9 +276,10 @@ impl ChatApp {
                     theme,
                 )
                 .on_click({
+                    let chat = chat.clone();
                     let model = model.clone();
-                    let id = state.server_id;
                     move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
                         model.update(cx, |m, cx| m.connect_server(id, cx));
                     }
                 }),
@@ -288,9 +293,10 @@ impl ChatApp {
                     theme,
                 )
                 .on_click({
+                    let chat = chat.clone();
                     let model = model.clone();
-                    let id = state.server_id;
                     move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
                         model.update(cx, |m, cx| m.disconnect_server(id, cx));
                     }
                 }),
@@ -305,9 +311,10 @@ impl ChatApp {
                     theme,
                 )
                 .on_click({
+                    let chat = chat.clone();
                     let model = model.clone();
-                    let id = state.server_id;
                     move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
                         let name = model
                             .read(cx)
                             .servers()
@@ -329,7 +336,7 @@ impl ChatApp {
                 )
                 .on_click({
                     let chat = chat.clone();
-                    let id = state.server_id;
+                    // open_nick_modal이 메뉴도 닫는다
                     move |_, window, cx| {
                         chat.update(cx, |this, cx| this.open_nick_modal(id, window, cx));
                     }
@@ -348,16 +355,19 @@ impl ChatApp {
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
         let model = self.model.clone();
+        let chat = cx.entity();
 
         let menu = context_menu_container(theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menus(cx)))
             .child(
                 context_menu_item("menu-join", "📥", "Join", MenuItemStyle::Accent, theme)
                     .on_click({
+                        let chat = chat.clone();
                         let model = model.clone();
                         let server_id = state.server_id;
                         let channel_name = state.channel_name.clone();
                         move |_, _, cx| {
+                            chat.update(cx, |this, cx| this.close_menus(cx));
                             model.update(cx, |m, cx| m.join_channel(server_id, &channel_name, cx));
                         }
                     }),
@@ -365,9 +375,11 @@ impl ChatApp {
             .child(
                 context_menu_item("menu-leave", "🚪", "Leave", MenuItemStyle::Danger, theme)
                     .on_click({
+                        let chat = chat.clone();
                         let model = model.clone();
                         let channel_id = state.channel_id.clone();
                         move |_, _, cx| {
+                            chat.update(cx, |this, cx| this.close_menus(cx));
                             model.update(cx, |m, cx| m.leave_channel(&channel_id, cx));
                         }
                     }),
@@ -382,8 +394,10 @@ impl ChatApp {
                     theme,
                 )
                 .on_click({
+                    let chat = chat.clone();
                     let name = state.channel_name.clone();
                     move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
                     }
                 }),
