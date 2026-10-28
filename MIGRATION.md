@@ -611,7 +611,15 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   - 함께 수정: `cancel_connect`가 코어 상태는 Disconnected로 바꾸면서 UI엔 Failed를 보내던
     불일치 → 실제 상태를 전송 (Disconnect 메뉴가 연결 취소에 쓰이게 되어 사용자 취소가 "실패"로
     보였다).
-- 수동: "IRC client built with Tauri" → "IRC client built with GPUI". (GitHub 저장소 설명 —
+- **이름 변경: kirc-rs → khannel (2026-10-28, 사용자 결정)** — Fedora 공식 저장소에 같은 이름의 IRC 클라이언트
+  `kirc`(mcpcpc/kirc, `/usr/bin/kirc`)가 있어 1.0 첫 배포 전에 변경. `khannel`은 Fedora/Homebrew(formula·cask)/
+  crates.io/AUR 모두 비어 있고 GitHub에 같은 이름의 IRC 프로젝트도 없음을 확인.
+  - 크레이트 `kirc-core` → `khannel-core`, `kirc-app` → `khannel`(실행 파일 `khannel`), 코어 모듈
+    `kirc` → `client`, `state::kirc` → `state::khannel`, 타입 `Kirc*` → `Khannel*`, 액션 네임스페이스 `khannel`.
+  - 앱 식별자 `com.kimtalmo.kirc-rs` → `com.kimtalmo.khannel`(데이터 폴더·Wayland app_id). 옛 데이터 폴더
+    마이그레이션은 두지 않는다 — 사실상 사용자가 없는 v1.0 새 앱이라 불필요(사용자 결정).
+  - 창 제목·macOS 메뉴·CTCP VERSION 응답(`khannel v<크레이트 버전>`)도 변경. 이 문서의 이전 기록은 이력이라 옛 이름 그대로 둔다.
+- 수동: "IRC client built with Tauri" → "IRC client built with GPUI". (저장소 이름 `kirc-rs` 변경 여부도 사용자 결정) (GitHub 저장소 설명 —
   사용자가 직접 변경)
 
 ---

@@ -3,7 +3,7 @@
 //! UI 프레임워크(GPUI 등)가 모두 사용하는 이벤트를 하나의 [`UiEvent`]로 정의하고,
 //! 전달 경로는 [`UiSink`] trait으로 추상화한다. tokio 채널 구현체를 기본 제공한다.
 
-use crate::kirc::types::{ChannelId, ServerId, ServerStatus};
+use crate::client::types::{ChannelId, ServerId, ServerStatus};
 use serde::Serialize;
 use tracing::trace;
 

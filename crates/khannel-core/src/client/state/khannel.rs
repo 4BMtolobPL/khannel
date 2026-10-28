@@ -1,7 +1,7 @@
-use crate::kirc::persistence::{KircStateSnapshot, ServerStateSnapshot};
-use crate::kirc::state::server::{ServerRuntime, ServerState};
-use crate::kirc::types::server::ServerConfig;
-use crate::kirc::types::ServerId;
+use crate::client::persistence::{KhannelStateSnapshot, ServerStateSnapshot};
+use crate::client::state::server::{ServerRuntime, ServerState};
+use crate::client::types::server::ServerConfig;
+use crate::client::types::ServerId;
 use crate::memento::{Memento, Originator};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-pub struct KircState {
+pub struct KhannelState {
     servers: Mutex<HashMap<ServerId, Arc<ServerState>>>,
     persistence_path: Option<PathBuf>,
     /// 동시 저장 직렬화 — 같은 `.tmp` 파일에 두 저장이 섞여 쓰이지 않게 한다.
@@ -20,7 +20,7 @@ pub struct KircState {
     drained: AtomicBool,
 }
 
-impl KircState {
+impl KhannelState {
     pub fn set_persistence_path(&mut self, path: &std::path::Path) {
         self.persistence_path = Some(path.to_path_buf());
     }
@@ -88,7 +88,7 @@ impl KircState {
     }
 }
 
-impl FromIterator<ServerStateSnapshot> for KircState {
+impl FromIterator<ServerStateSnapshot> for KhannelState {
     fn from_iter<T: IntoIterator<Item = ServerStateSnapshot>>(iter: T) -> Self {
         let mut server_map = HashMap::new();
         for server in iter {
@@ -104,24 +104,24 @@ impl FromIterator<ServerStateSnapshot> for KircState {
     }
 }
 
-impl Originator<KircStateSnapshot> for KircState {
-    fn snapshot(&self) -> KircStateSnapshot {
+impl Originator<KhannelStateSnapshot> for KhannelState {
+    fn snapshot(&self) -> KhannelStateSnapshot {
         let servers = self.servers.lock().unwrap();
-        KircStateSnapshot::from_iter(servers.values().map(|state| state.snapshot()))
+        KhannelStateSnapshot::from_iter(servers.values().map(|state| state.snapshot()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kirc::types::server::ServerConfig;
+    use crate::client::types::server::ServerConfig;
 
     /// drain 이후의 저장은 config.json을 빈 서버 목록으로 덮어쓰지 않는다.
     #[test]
     fn save_after_drain_keeps_last_snapshot() {
-        let path = std::env::temp_dir().join(format!("kirc-test-{}.json", Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!("khannel-test-{}.json", Uuid::now_v7()));
         let config = ServerConfig::new("irc.test".to_string(), 6667, false, "nick".to_string());
-        let mut state = KircState::from_iter([ServerStateSnapshot::new(config, HashMap::new())]);
+        let mut state = KhannelState::from_iter([ServerStateSnapshot::new(config, HashMap::new())]);
         state.set_persistence_path(&path);
 
         state.save_snapshot().unwrap();

@@ -1,8 +1,9 @@
-# kirc (kirc-rs)
+# khannel
 
 [GPUI](https://gpui.rs/)와 Rust로 만든 현대적인 데스크톱 IRC 클라이언트입니다.
 
-> Tauri + SvelteKit 버전에서 GPUI로 전환했습니다. 전환 과정과 결정 이력은 [MIGRATION.md](MIGRATION.md)를 참고하세요.
+> Tauri + SvelteKit 버전(이전 이름 `kirc-rs`)에서 GPUI로 전환하면서 이름을 `khannel`로 바꿨습니다.
+> 전환 과정과 결정 이력은 [MIGRATION.md](MIGRATION.md)를 참고하세요.
 
 ## 기술 스택
 
@@ -42,60 +43,60 @@
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  kirc-app (GPUI)                                     │
+│  khannel (GPUI)                                      │
 │  ┌─────────────┐  ┌──────────────────────────────┐   │
 │  │  IrcModel   │──│ ChatApp / Sidebar /          │   │
 │  │  (Entity)   │  │ MessageView / InputBar / 모달 │   │
 │  └─────────────┘  └──────────────────────────────┘   │
 │        ↑ UiEvent (tokio mpsc 채널)                    │
-│        ↓ UiApi → KircApi (메서드 호출)                │
+│        ↓ UiApi → KhannelApi (메서드 호출)             │
 ├──────────────────────────────────────────────────────┤
-│  kirc-core (프레임워크 무관)                          │
+│  khannel-core (프레임워크 무관)                       │
 │  ┌──────────────┐   ┌─────────────┐                  │
-│  │ KircManager  │──→│ ServerActor │ (Tokio task)     │
+│  │KhannelManager│──→│ ServerActor │ (Tokio task)     │
 │  └──────────────┘   └──────┬──────┘                  │
 │  ┌──────────────┐          │ irc crate stream        │
-│  │  KircState   │          ↓                         │
+│  │ KhannelState │          ↓                         │
 │  │  (Mutex)     │   IRC Server (TCP/TLS)             │
 │  └──────────────┘                                    │
 └──────────────────────────────────────────────────────┘
 ```
 
 - IRC 코어는 `UiSink` trait으로만 UI에 이벤트를 보내며 GPUI에 의존하지 않습니다.
-- `kirc-app`은 독립 tokio 런타임을 소유하고(서버 액터 실행), GPUI 쪽에서 `UiEvent`를 소비해
+- `khannel`은 독립 tokio 런타임을 소유하고(서버 액터 실행), GPUI 쪽에서 `UiEvent`를 소비해
   `IrcModel` 엔티티 상태로 반영합니다.
 
-### 코어 구조 (`crates/kirc-core/src/`)
+### 코어 구조 (`crates/khannel-core/src/`)
 
 ```
-crates/kirc-core/src/
+crates/khannel-core/src/
 ├── lib.rs
 ├── error.rs            # 공통 에러 타입
 ├── fs.rs               # JSON 영속성 (load / save)
 ├── logging.rs          # 구조화된 로깅 (tracing) 초기화
 ├── memento.rs          # Memento 패턴 trait (Originator / Memento)
-└── kirc/
-    ├── commands.rs     # KircApi — UI에서 호출하는 명령 facade + payload 타입
+└── client/
+    ├── commands.rs     # KhannelApi — UI에서 호출하는 명령 facade + payload 타입
     ├── core.rs         # ServerActor (Tokio 비동기 루프 및 IRC 이벤트 처리)
     ├── ctcp.rs         # CTCP 메시지 파싱 및 응답 처리 (VERSION, PING, TIME)
     ├── event.rs        # UiEvent enum + UiSink trait (UI 이벤트 버스)
-    ├── manager.rs      # KircManager (서버 생명주기 관리)
+    ├── manager.rs      # KhannelManager (서버 생명주기 관리)
     ├── persistence.rs  # 스냅샷 직렬화 구조체
     ├── state/
     │   ├── app.rs      # AppState 열거형 (Running / ShuttingDown / Terminated)
     │   ├── channel.rs  # ChannelState
-    │   ├── kirc.rs     # KircState (서버 맵, 영속성)
+    │   ├── khannel.rs  # KhannelState (서버 맵, 영속성)
     │   └── server.rs   # ServerState + ServerRuntime FSM
     └── types/
         └── server.rs   # ServerConfig  (types.rs: ServerId, ChannelId, ServerStatus, ServerCommand)
 ```
 
-### 앱 구조 (`crates/kirc-app/src/`)
+### 앱 구조 (`crates/khannel/src/`)
 
 ```
-crates/kirc-app/src/
+crates/khannel/src/
 ├── main.rs             # 앱 진입점: 경로/로깅, 스냅샷 복원, 창 열기, 종료 흐름
-├── api.rs              # UiApi — tokio 런타임 소유 + kirc-core 명령 브리지
+├── api.rs              # UiApi — tokio 런타임 소유 + khannel-core 명령 브리지
 ├── model.rs            # IrcModel — UiEvent → 서버/채널/메시지 상태 반영
 ├── action.rs           # GPUI 액션 (Quit, Dismiss, 텍스트 편집)
 ├── theme.rs            # One Light / One Dark 팔레트
@@ -147,10 +148,10 @@ Disconnected ──connect──→ Connecting ──(취소)──→ Disconnec
 
 ```bash
 # 개발 실행
-cargo run -p kirc-app
+cargo run -p khannel
 
 # 릴리스 빌드
-cargo build -p kirc-app --release
+cargo build -p khannel --release
 ```
 
 ### 테스트 / 품질 검사
@@ -169,11 +170,10 @@ CI(`.github/workflows/main.yml`)는 push/PR마다 Ubuntu와 macOS에서 fmt/clip
 서버 설정과 채널 목록(잠금 상태 포함)은 OS 앱 데이터 디렉토리의 `config.json`에 저장됩니다.
 서버 추가, 채널 참가/퇴장, 잠금 변경 시 즉시 저장되고 종료 시에도 저장됩니다.
 
-- **macOS**: `~/Library/Application Support/com.kimtalmo.kirc-rs/config.json`
-- **Linux**: `~/.local/share/com.kimtalmo.kirc-rs/config.json`
+- **macOS**: `~/Library/Application Support/com.kimtalmo.khannel/config.json`
+- **Linux**: `~/.local/share/com.kimtalmo.khannel/config.json`
 
-debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다. 경로는 이전 Tauri 버전과 같아서
-기존 설정을 그대로 이어서 씁니다.
+debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다.
 
 저장되는 정보: 서버 호스트·포트·TLS·닉네임, 참가 중인 채널 목록 및 잠금 상태.
 메시지 히스토리는 세션 내 메모리에만 유지되며 저장되지 않습니다.

@@ -10,7 +10,7 @@ use gpui::{
     MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render, Styled, Window,
     WindowControlArea,
 };
-use kirc_core::kirc::types::ServerId;
+use khannel_core::client::types::ServerId;
 
 use crate::model::IrcModel;
 use crate::overlay::change_nick_modal::ChangeNickModal;
@@ -266,7 +266,7 @@ impl ChatApp {
     }
 
     // ── 서버 컨텍스트 메뉴 (Svelte: Connect / Disconnect / Copy Server Name / Change Nickname,
-    //    + Delete Server — kirc 추가) ──
+    //    + Delete Server — khannel 추가) ──
     //
     // 항목 클릭 시 메뉴를 닫는다 (Svelte: window click listener가 메뉴 안 클릭에도 닫았다).
     // 모델 액션은 메뉴를 닫은 뒤 실행한다.

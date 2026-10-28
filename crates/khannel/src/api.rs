@@ -1,4 +1,4 @@
-//! kirc-core(KircApi/KircManager)와 GPUI 간의 브리지 계층.
+//! khannel-core(KhannelApi/KhannelManager)와 GPUI 간의 브리지 계층.
 //!
 //! - tokio 런타임 소유 (IRC ServerActor는 tokio 스레드에서 동작)
 //! - 모든 명령이 tokio 런타임 컨텍스트 안에서 실행되도록 enter() 가드 사용
@@ -8,14 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use kirc_core::error::MyCustomError;
-use kirc_core::kirc::commands::{
-    ChangeNickPayload, ChannelPayload, ConnectServerPayload, KircApi, ServerInfo,
+use khannel_core::client::commands::{
+    ChangeNickPayload, ChannelPayload, ConnectServerPayload, KhannelApi, ServerInfo,
 };
-use kirc_core::kirc::event::{EventSender, UiEvent};
-use kirc_core::kirc::manager::KircManager;
-use kirc_core::kirc::state::kirc::KircState;
-use kirc_core::kirc::types::ServerId;
+use khannel_core::client::event::{EventSender, UiEvent};
+use khannel_core::client::manager::KhannelManager;
+use khannel_core::client::state::khannel::KhannelState;
+use khannel_core::client::types::ServerId;
+use khannel_core::error::MyCustomError;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub type UiEventReceiver = UnboundedReceiver<UiEvent>;
@@ -23,7 +23,7 @@ pub type UiEventReceiver = UnboundedReceiver<UiEvent>;
 /// UiApi: UI에서 호출하는 모든 명령의 진입점.
 pub struct UiApi {
     rt: Arc<tokio::runtime::Runtime>,
-    kirc_api: KircApi,
+    khannel_api: KhannelApi,
     ui_sink: EventSender,
     /// shutdown은 앱 종료 흐름 중 두 번(Quit 액션 → cx.quit → on_app_quit) 요청될 수
     /// 있으므로, 최초 1회만 실제 drain을 수행한다.
@@ -45,19 +45,23 @@ pub fn setup() -> (Arc<tokio::runtime::Runtime>, EventSender, UiEventReceiver) {
     (rt, ui_sink, rx)
 }
 
-/// Snapshot을 복원해 KircState + KircManager + KircApi 세트를 만든다.
-pub fn build_kirc(ui_sink: EventSender, state: KircState) -> KircApi {
+/// Snapshot을 복원해 KhannelState + KhannelManager + KhannelApi 세트를 만든다.
+pub fn build_khannel(ui_sink: EventSender, state: KhannelState) -> KhannelApi {
     let state = Arc::new(state);
-    let manager = Arc::new(KircManager::new(state, ui_sink));
-    KircApi::new(manager)
+    let manager = Arc::new(KhannelManager::new(state, ui_sink));
+    KhannelApi::new(manager)
 }
 
 // Tauri 시절 #[tauri::command] 명령들을 평면화한 facade.
 impl UiApi {
-    pub fn new(rt: Arc<tokio::runtime::Runtime>, kirc_api: KircApi, ui_sink: EventSender) -> Self {
+    pub fn new(
+        rt: Arc<tokio::runtime::Runtime>,
+        khannel_api: KhannelApi,
+        ui_sink: EventSender,
+    ) -> Self {
         Self {
             rt,
-            kirc_api,
+            khannel_api,
             ui_sink,
             shutdown_started: AtomicBool::new(false),
         }
@@ -66,28 +70,28 @@ impl UiApi {
     /// UI 초기화: 스냅샷 서버 자동 연결 시작
     pub fn init(&self) {
         let _guard = self.rt.enter();
-        self.kirc_api.init_servers();
+        self.khannel_api.init_servers();
     }
 
     /// 서버 목록 동기화
     pub fn get_servers(&self) -> Vec<ServerInfo> {
         let _guard = self.rt.enter();
-        self.kirc_api.get_servers().unwrap_or_default()
+        self.khannel_api.get_servers().unwrap_or_default()
     }
 
     pub fn connect_server(&self, payload: ConnectServerPayload) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.connect_server(payload)
+        self.khannel_api.connect_server(payload)
     }
 
     pub fn join_channel(&self, server_id: ServerId, channel: &str) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.join_channel(server_id, channel)
+        self.khannel_api.join_channel(server_id, channel)
     }
 
     pub fn leave_channel(&self, payload: &ChannelPayload) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.leave_channel(payload)
+        self.khannel_api.leave_channel(payload)
     }
 
     pub fn send_message(
@@ -97,37 +101,37 @@ impl UiApi {
         message: &str,
     ) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.send_message(server_id, target, message)
+        self.khannel_api.send_message(server_id, target, message)
     }
 
     pub fn remove_server(&self, server_id: ServerId) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.remove_server(server_id)
+        self.khannel_api.remove_server(server_id)
     }
 
     pub fn cancel_connect(&self, server_id: ServerId) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.cancel_connect(server_id)
+        self.khannel_api.cancel_connect(server_id)
     }
 
     pub fn disconnect_server(&self, server_id: ServerId) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.disconnect_server(server_id)
+        self.khannel_api.disconnect_server(server_id)
     }
 
     pub fn lock_channel(&self, payload: &ChannelPayload) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.lock_channel(payload, &self.ui_sink)
+        self.khannel_api.lock_channel(payload, &self.ui_sink)
     }
 
     pub fn unlock_channel(&self, payload: &ChannelPayload) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.unlock_channel(payload, &self.ui_sink)
+        self.khannel_api.unlock_channel(payload, &self.ui_sink)
     }
 
     pub fn change_nickname(&self, payload: &ChangeNickPayload) -> Result<(), MyCustomError> {
         let _guard = self.rt.enter();
-        self.kirc_api.change_nickname(payload)
+        self.khannel_api.change_nickname(payload)
     }
 
     /// 블로킹 graceful shutdown: 앱 종료 흐름(Quit 액션, 창 닫기)에서 호출.
@@ -147,7 +151,7 @@ impl UiApi {
 
         tracing::info!("Graceful shutdown requested (max wait: {:?})", max_wait);
         let rt = self.rt.clone();
-        let manager = self.kirc_api.manager().clone();
+        let manager = self.khannel_api.manager().clone();
 
         // manager.shutdown() 내부의 tokio::time::timeout 캡이 tokio 컨텍스트를
         // 필요로 하므로, tokio 런타임 안에서 대기한다.

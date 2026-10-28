@@ -9,7 +9,7 @@ use gpui::{
     div, prelude::*, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Styled, Window,
 };
-use kirc_core::kirc::types::ServerId;
+use khannel_core::client::types::ServerId;
 
 use crate::model::{Channel, IrcModel, Server, UiServerStatus};
 use crate::theme::{status_dot_color, Theme};

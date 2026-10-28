@@ -3,15 +3,15 @@
 > 작성일: 2026-10-28
 > 참고 소스: zeron `ab189159` (v0.2.128), 주로 `crates/ui/src/shell.rs`, `crates/ui/src/theme.rs`,
 > `crates/ui/src/shell/spaces.rs`
-> 대상: kirc-app의 창 왼쪽 위 컨트롤(버튼 island)과 사이드바
+> 대상: khannel 앱의 창 왼쪽 위 컨트롤(버튼 island)과 사이드바
 
-kirc-rs는 GPUI(zed git dep) 외의 UI 의존성을 두지 않는다. zeron의 창 상단 컨트롤과 사이드바를
+khannel은 GPUI(zed git dep) 외의 UI 의존성을 두지 않는다. zeron의 창 상단 컨트롤과 사이드바를
 가능한 한 비슷하게 옮기되, 이 원칙 안에서 바로 할 수 있는 것만 적용했다. 너무 복잡하거나
 의존성을 넣는 편이 나은 것은 아래 "보류"에 정리한다.
 
 ## 1. 적용한 것
 
-| 항목 | zeron 출처 | kirc-app 위치 |
+| 항목 | zeron 출처 | khannel 위치 |
 |---|---|---|
 | 컨트롤 줄 높이 38px + 위쪽 패딩 4px (컨트롤 중심 y=21) | `Theme::TITLEBAR_HEIGHT`, `TITLEBAR_TOP_PAD` | `ui/chat_app.rs` `TOP_INSET`, `TOP_PAD` |
 | macOS 신호등 위치 (14,14), 컨트롤 묶음 시작 x=88 (전체 화면 12) | `lib.rs` `traffic_light_position`, `titlebar_cluster_start` | `main.rs`, `ui/chat_app.rs` `MAC_CLUSTER_START*` |
@@ -29,7 +29,7 @@ kirc-rs는 GPUI(zed git dep) 외의 UI 의존성을 두지 않는다. zeron의 �
 | 행: compact 29px, r8, 가로 8px, 목록 간격 2px / 위쪽 4px, 비선택 글자 80% | `sidebar_row_height`, `SIDEBAR_LIST_GAP`, `SIDEBAR_LIST_PAD_TOP` | `ui/sidebar.rs` `row()` |
 | 메인 패널: 카드 없이 꽉 채움, 위쪽 38px 여백(창 이동 영역) | "Flush panel" 주석 | `ChatApp` 메인 열 |
 
-kirc 고유로 남긴 것:
+khannel 고유로 남긴 것:
 
 - **사이드바 토글 아이콘 `☰`**: 사용자 결정. zeron은 SVG 글리프(열림/닫힘 모양이 바뀜)를 쓴다.
   글자 `☰`는 macOS 대체 폰트에서 중심이 어긋나 막대 3개를 div로 그린다(`hamburger_icon`).
@@ -53,13 +53,13 @@ kirc 고유로 남긴 것:
 | **Linux 창 버튼 배치를 데스크톱 설정에서 읽기** (GNOME `button-layout`, 최소화/최대화) | `linux_captions`, `render_linux_caption_controls` | 설정을 읽으려면 D-Bus/portal(`zbus`, `ashpd` 등) 의존성이 필요하다. 사용자 결정으로 닫기 버튼만 오른쪽 위에 둔다. |
 | **플로팅 CSD 창의 둥근 모서리** | `window_corner_radius`, 레이어마다 rounded 처리 | gpui는 자식을 둥글게 clip하지 못해, 창 가장자리에 닿는 모든 레이어가 각자 모서리를 둥글게 해야 한다. 레이아웃 전반에 손이 간다. 지금은 직각 테두리 + 그림자. |
 | **사이드바 기능** (폭 조절 grabber와 저장, 섹션 접기/펼치기 chevron, 드래그 재정렬, 고정 섹션, 정렬 변경 애니메이션) | `sidebar_sections.rs`, `sidebar_pins.rs`, `render_chat_sidebar` | 기능 범위 자체가 크다. 필요해지면 항목별로 따로 진행. |
-| **gpui-component** | `gpui-base` (zeronsh/gpui-component 포크, zeron 전용 gpui 포크 `zeronsh/zui`에 고정) | zeron은 자체 gpui 포크를 쓰므로 이 컴포넌트 라이브러리를 kirc-rs의 zed gpui와 함께 쓸 수 없다(MIGRATION.md Phase 3의 crates.io 판과 같은 이유). |
+| **gpui-component** | `gpui-base` (zeronsh/gpui-component 포크, zeron 전용 gpui 포크 `zeronsh/zui`에 고정) | zeron은 자체 gpui 포크를 쓰므로 이 컴포넌트 라이브러리를 khannel의 zed gpui와 함께 쓸 수 없다(MIGRATION.md Phase 3의 crates.io 판과 같은 이유). |
 | **타이포그래피 설정** (rem 크기 설정, `ui_rems`, 모노 폰트 배지) | `typography.rs` | 설정 시스템이 없어 고정 크기(13px 행, 12px 헤더)로 두었다. |
 
 ## 3. 참고
 
 - zeron은 `zeronsh/zui`(wingleeio/zed `e2ddcc6`에서 추출한 gpui 포크)를 쓴다. 이번에 쓴 API
   (`TitlebarOptions`, `app_owns_titlebar_drag`, `WindowControlArea::Drag`, `occlude`,
-  `start_window_move`, `titlebar_double_click`, `window_decorations`)는 kirc-rs가 lock한 zed
+  `start_window_move`, `titlebar_double_click`, `window_decorations`)는 khannel이 lock한 zed
   `6b985a8`에도 있어 그대로 옮겼다.
 - 수치는 zeron 코드의 상수와 주석을 따랐다. 실제 화면 비교는 사용자 확인으로 맞춘다.

@@ -1,11 +1,11 @@
-use crate::kirc::ctcp::{parse_ctcp, CtcpCommand};
-use crate::kirc::event::EventSender;
-use crate::kirc::event::{
+use crate::client::ctcp::{parse_ctcp, CtcpCommand};
+use crate::client::event::EventSender;
+use crate::client::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
 };
-use crate::kirc::state::kirc::KircState;
-use crate::kirc::state::server::ServerState;
-use crate::kirc::types::{ServerCommand, ServerId, ServerStatus};
+use crate::client::state::khannel::KhannelState;
+use crate::client::state::server::ServerState;
+use crate::client::types::{ServerCommand, ServerId, ServerStatus};
 use futures::prelude::*;
 use irc::client::prelude::*;
 use irc::client::ClientStream;
@@ -23,7 +23,7 @@ pub struct ServerActor {
     ui_sink: EventSender,
     /// 스냅샷 저장용 (닉 변경 영속화). 액터 태스크가 상태 전체를 붙잡아 순환 참조가 되지
     /// 않도록 약한 참조로 둔다 — 종료 중이라 사라졌으면 저장을 건너뛴다.
-    kirc_state: Weak<KircState>,
+    khannel_state: Weak<KhannelState>,
 }
 
 impl ServerActor {
@@ -31,17 +31,17 @@ impl ServerActor {
         server_id: ServerId,
         server: Arc<ServerState>,
         ui_sink: EventSender,
-        kirc_state: Weak<KircState>,
+        khannel_state: Weak<KhannelState>,
     ) -> Self {
         Self {
             server_id,
             server,
             ui_sink,
-            kirc_state,
+            khannel_state,
         }
     }
 
-    /// 액터의 진입점. KircManager가 `tokio::spawn(actor.run())`으로 실행한다.
+    /// 액터의 진입점. KhannelManager가 `tokio::spawn(actor.run())`으로 실행한다.
     #[instrument(name = "server_actor", skip_all, fields(server_id = %self.server_id))]
     pub async fn run(self) {
         debug!(server_id = %self.server_id, "Starting server actor");
@@ -282,7 +282,7 @@ impl ServerActor {
 
     /// 상태 스냅샷 저장 (상태가 이미 사라졌으면 건너뛴다)
     fn persist(&self) {
-        if let Some(state) = self.kirc_state.upgrade() {
+        if let Some(state) = self.khannel_state.upgrade() {
             state.persist();
         }
     }
@@ -479,7 +479,10 @@ fn handle_ctcp(client: &Client, source_nickname: &str, ctcp: CtcpCommand) {
 
 fn get_ctcp_reply(ctcp: &CtcpCommand) -> Option<String> {
     match ctcp {
-        CtcpCommand::Version => Some("\x01VERSION kirc-rs v0.1\x01".to_string()),
+        CtcpCommand::Version => Some(format!(
+            "\x01VERSION khannel v{}\x01",
+            env!("CARGO_PKG_VERSION")
+        )),
         CtcpCommand::Ping(payload) => Some(format!("\x01PING {}\x01", payload)),
         CtcpCommand::Time => {
             let now = chrono::Local::now().to_rfc2822();
@@ -492,12 +495,18 @@ fn get_ctcp_reply(ctcp: &CtcpCommand) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kirc::ctcp::CtcpCommand;
+    use crate::client::ctcp::CtcpCommand;
 
     #[test]
     fn test_get_ctcp_reply_version() {
         let reply = get_ctcp_reply(&CtcpCommand::Version);
-        assert_eq!(reply, Some("\x01VERSION kirc-rs v0.1\x01".to_string()));
+        assert_eq!(
+            reply,
+            Some(format!(
+                "\x01VERSION khannel v{}\x01",
+                env!("CARGO_PKG_VERSION")
+            ))
+        );
     }
 
     #[test]
@@ -525,11 +534,11 @@ mod tests {
 #[cfg(test)]
 mod quit_tests {
     use super::*;
-    use crate::kirc::event::UiEvent;
-    use crate::kirc::manager::KircManager;
-    use crate::kirc::persistence::ServerStateSnapshot;
-    use crate::kirc::state::kirc::KircState;
-    use crate::kirc::types::server::ServerConfig;
+    use crate::client::event::UiEvent;
+    use crate::client::manager::KhannelManager;
+    use crate::client::persistence::ServerStateSnapshot;
+    use crate::client::state::khannel::KhannelState;
+    use crate::client::types::server::ServerConfig;
     use std::collections::HashMap;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
@@ -588,14 +597,14 @@ mod quit_tests {
         let (port, mock) = spawn_mock_server().await;
 
         let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
-        let state = Arc::new(KircState::from_iter([ServerStateSnapshot::new(
+        let state = Arc::new(KhannelState::from_iter([ServerStateSnapshot::new(
             config.clone(),
             HashMap::new(),
         )]));
         let server_id = *state.get_all_servers().keys().next().unwrap();
 
         let (tx, mut rx) = unbounded_channel::<UiEvent>();
-        let manager = KircManager::new(state.clone(), Arc::new(tx));
+        let manager = KhannelManager::new(state.clone(), Arc::new(tx));
 
         manager.connect_server(Some(server_id), config).unwrap();
         wait_for_status(&mut rx, server_id, ServerStatus::Connected).await;
@@ -630,7 +639,7 @@ mod quit_tests {
         });
 
         let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
-        let state = Arc::new(KircState::from_iter([ServerStateSnapshot::new(
+        let state = Arc::new(KhannelState::from_iter([ServerStateSnapshot::new(
             config.clone(),
             HashMap::new(),
         )]));
@@ -638,7 +647,7 @@ mod quit_tests {
         let server = state.get_server(server_id).unwrap();
 
         let (tx, mut rx) = unbounded_channel::<UiEvent>();
-        let manager = KircManager::new(state.clone(), Arc::new(tx));
+        let manager = KhannelManager::new(state.clone(), Arc::new(tx));
 
         manager.connect_server(Some(server_id), config).unwrap();
 
@@ -675,11 +684,11 @@ mod quit_tests {
 
     /// 디스크의 config.json을 다시 읽어 채널명 → locked 맵으로 돌려준다.
     fn load_saved_channels(path: &std::path::Path) -> HashMap<String, bool> {
-        use crate::kirc::persistence::KircStateSnapshot;
+        use crate::client::persistence::KhannelStateSnapshot;
         use crate::memento::Memento;
 
-        let snapshot: KircStateSnapshot = crate::fs::load(path).unwrap();
-        let state: KircState = snapshot.restore();
+        let snapshot: KhannelStateSnapshot = crate::fs::load(path).unwrap();
+        let state: KhannelState = snapshot.restore();
         state
             .get_all_servers()
             .values()
@@ -691,23 +700,23 @@ mod quit_tests {
     /// lock/unlock/join/part는 정상 종료를 기다리지 않고 즉시 config.json에 반영된다.
     #[tokio::test]
     async fn channel_changes_are_persisted_immediately() {
-        use crate::kirc::commands::{ChannelPayload, KircApi};
+        use crate::client::commands::{ChannelPayload, KhannelApi};
 
         let (port, _mock) = spawn_mock_server().await;
-        let path = std::env::temp_dir().join(format!("kirc-test-{}.json", uuid::Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!("khannel-test-{}.json", uuid::Uuid::now_v7()));
 
         let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
         let mut state =
-            KircState::from_iter([ServerStateSnapshot::new(config.clone(), HashMap::new())]);
+            KhannelState::from_iter([ServerStateSnapshot::new(config.clone(), HashMap::new())]);
         state.set_persistence_path(&path);
         let state = Arc::new(state);
         let server_id = *state.get_all_servers().keys().next().unwrap();
 
         let (tx, mut rx) = unbounded_channel::<UiEvent>();
         let sink: EventSender = Arc::new(tx);
-        let api = KircApi::new(Arc::new(KircManager::new(state.clone(), sink.clone())));
+        let api = KhannelApi::new(Arc::new(KhannelManager::new(state.clone(), sink.clone())));
 
-        api.connect_server(crate::kirc::commands::ConnectServerPayload::new(
+        api.connect_server(crate::client::commands::ConnectServerPayload::new(
             Some(server_id),
             "127.0.0.1".to_string(),
             port,
@@ -795,8 +804,8 @@ mod quit_tests {
 
     /// mock 서버에 연결된 매니저/API 한 벌 (config.json은 임시 경로)
     struct NickHarness {
-        api: crate::kirc::commands::KircApi,
-        state: Arc<KircState>,
+        api: crate::client::commands::KhannelApi,
+        state: Arc<KhannelState>,
         server_id: ServerId,
         rx: UnboundedReceiver<UiEvent>,
         path: std::path::PathBuf,
@@ -805,19 +814,19 @@ mod quit_tests {
     impl NickHarness {
         fn new(port: u16) -> Self {
             let path =
-                std::env::temp_dir().join(format!("kirc-test-{}.json", uuid::Uuid::now_v7()));
+                std::env::temp_dir().join(format!("khannel-test-{}.json", uuid::Uuid::now_v7()));
             let config =
                 ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
             let mut state =
-                KircState::from_iter([ServerStateSnapshot::new(config, HashMap::new())]);
+                KhannelState::from_iter([ServerStateSnapshot::new(config, HashMap::new())]);
             state.set_persistence_path(&path);
             let state = Arc::new(state);
             let server_id = *state.get_all_servers().keys().next().unwrap();
 
             let (tx, rx) = unbounded_channel::<UiEvent>();
-            let manager = Arc::new(KircManager::new(state.clone(), Arc::new(tx)));
+            let manager = Arc::new(KhannelManager::new(state.clone(), Arc::new(tx)));
             Self {
-                api: crate::kirc::commands::KircApi::new(manager),
+                api: crate::client::commands::KhannelApi::new(manager),
                 state,
                 server_id,
                 rx,
@@ -839,13 +848,13 @@ mod quit_tests {
 
         /// 디스크에 저장된 접속 닉 (아직 저장된 적 없으면 None)
         fn saved_nick(&self) -> Option<String> {
-            use crate::kirc::persistence::KircStateSnapshot;
+            use crate::client::persistence::KhannelStateSnapshot;
             use crate::memento::Memento;
             if !self.path.exists() {
                 return None;
             }
-            let snapshot: KircStateSnapshot = crate::fs::load(&self.path).unwrap();
-            let state: KircState = snapshot.restore();
+            let snapshot: KhannelStateSnapshot = crate::fs::load(&self.path).unwrap();
+            let state: KhannelState = snapshot.restore();
             let server = state.get_all_servers().into_values().next()?;
             let nick = server.config().nickname().to_string();
             Some(nick)
@@ -856,7 +865,7 @@ mod quit_tests {
             timeout(Duration::from_secs(5), async {
                 loop {
                     match self.rx.recv().await {
-                        Some(UiEvent::Ui(crate::kirc::event::UIEventPayload::Nick {
+                        Some(UiEvent::Ui(crate::client::event::UIEventPayload::Nick {
                             old_nick,
                             new_nick,
                             ..
@@ -887,7 +896,8 @@ mod quit_tests {
         h.connect();
         wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
 
-        let payload = crate::kirc::commands::ChangeNickPayload::new(h.server_id, "newnick".into());
+        let payload =
+            crate::client::commands::ChangeNickPayload::new(h.server_id, "newnick".into());
         h.api.change_nickname(&payload).unwrap();
         assert_eq!(h.next_nick_event().await, ("nick".into(), "newnick".into()));
 
@@ -1045,7 +1055,8 @@ mod quit_tests {
         let (port, lines) = spawn_taken_nick_mock(&[]).await;
         let mut h = NickHarness::new(port);
 
-        let payload = crate::kirc::commands::ChangeNickPayload::new(h.server_id, "newnick".into());
+        let payload =
+            crate::client::commands::ChangeNickPayload::new(h.server_id, "newnick".into());
         h.api.change_nickname(&payload).unwrap();
 
         assert_eq!(h.next_nick_event().await, ("nick".into(), "newnick".into()));
@@ -1065,7 +1076,7 @@ mod quit_tests {
         h.connect();
         wait_for_status(&mut h.rx, h.server_id, ServerStatus::Failed).await;
 
-        let payload = crate::kirc::commands::ChangeNickPayload::new(h.server_id, "free".into());
+        let payload = crate::client::commands::ChangeNickPayload::new(h.server_id, "free".into());
         h.api.change_nickname(&payload).unwrap();
         wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
 
@@ -1119,10 +1130,10 @@ mod quit_tests {
         .expect("no ServerRemoved event");
 
         // 저장된 상태에 서버가 남지 않는다 → 재시작해도 다시 접속하지 않는다
-        use crate::kirc::persistence::KircStateSnapshot;
+        use crate::client::persistence::KhannelStateSnapshot;
         use crate::memento::Memento;
-        let snapshot: KircStateSnapshot = crate::fs::load(&h.path).unwrap();
-        let restored: KircState = snapshot.restore();
+        let snapshot: KhannelStateSnapshot = crate::fs::load(&h.path).unwrap();
+        let restored: KhannelState = snapshot.restore();
         assert!(restored.get_all_servers().is_empty());
     }
 

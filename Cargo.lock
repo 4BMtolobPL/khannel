@@ -2594,6 +2594,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "khannel"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "directories",
+ "futures",
+ "gpui",
+ "gpui_platform",
+ "khannel-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
+name = "khannel-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "irc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2609,41 +2644,6 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
-
-[[package]]
-name = "kirc-app"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "directories",
- "futures",
- "gpui",
- "gpui_platform",
- "kirc-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "unicode-segmentation",
- "uuid",
-]
-
-[[package]]
-name = "kirc-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "futures",
- "irc",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "kurbo"

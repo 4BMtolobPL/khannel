@@ -9,7 +9,7 @@ use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, EventEmitter, Focusable, IntoElement,
     ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
-use kirc_core::kirc::types::ServerId;
+use khannel_core::client::types::ServerId;
 
 use crate::action::Dismiss;
 use crate::model::IrcModel;

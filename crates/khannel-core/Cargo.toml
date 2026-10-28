@@ -1,5 +1,5 @@
 [package]
-name = "kirc-core"
+name = "khannel-core"
 version = "0.1.0"
 description = "IRC core logic (framework-agnostic)"
 edition = "2021"

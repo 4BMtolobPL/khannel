@@ -1,11 +1,11 @@
+use crate::client::event::{emit_channel_lock_changed, EventSender};
+use crate::client::manager::KhannelManager;
+use crate::client::types::{ServerCommand, ServerId, ServerStatus};
 use crate::error::MyCustomError;
-use crate::kirc::event::{emit_channel_lock_changed, EventSender};
-use crate::kirc::manager::KircManager;
-use crate::kirc::types::{ServerCommand, ServerId, ServerStatus};
 use anyhow::Context;
 use std::sync::Arc;
 
-pub use crate::kirc::commands::payload::{
+pub use crate::client::commands::payload::{
     ChangeNickPayload, ChannelInfo, ChannelPayload, ConnectServerPayload, ServerInfo,
 };
 use tracing::{info, instrument};
@@ -14,16 +14,16 @@ use tracing::{info, instrument};
 ///
 /// Tauri 시절 `#[tauri::command]` 데코레이터가 물고 있던 역할을 대신한다.
 /// GPUI 액션/테스트에서 이 메서드들을 직접 호출한다.
-pub struct KircApi {
-    manager: Arc<KircManager>,
+pub struct KhannelApi {
+    manager: Arc<KhannelManager>,
 }
 
-impl KircApi {
-    pub fn new(manager: Arc<KircManager>) -> Self {
+impl KhannelApi {
+    pub fn new(manager: Arc<KhannelManager>) -> Self {
         Self { manager }
     }
 
-    pub fn manager(&self) -> &Arc<KircManager> {
+    pub fn manager(&self) -> &Arc<KhannelManager> {
         &self.manager
     }
 
@@ -32,7 +32,7 @@ impl KircApi {
     }
 
     pub fn get_servers(&self) -> Result<Vec<ServerInfo>, MyCustomError> {
-        let state = self.manager.kirc_state();
+        let state = self.manager.khannel_state();
         let servers = state.get_all_servers();
         let mut infos = Vec::new();
 
@@ -88,7 +88,7 @@ impl KircApi {
         message: &str,
     ) -> Result<(), MyCustomError> {
         info!("Command: send message invoked, server_id: {server_id}, target: {target}");
-        let state = self.manager.kirc_state();
+        let state = self.manager.khannel_state();
 
         // 1. 정책 체크
         if state.is_channel_locked(server_id, target) {
@@ -131,7 +131,7 @@ impl KircApi {
         payload: &ChannelPayload,
         ui_sink: &EventSender,
     ) -> Result<(), MyCustomError> {
-        let state = self.manager.kirc_state();
+        let state = self.manager.khannel_state();
         let server = state
             .get_server(payload.server_id())
             .context("Can't find server")?;
@@ -148,7 +148,7 @@ impl KircApi {
         payload: &ChannelPayload,
         ui_sink: &EventSender,
     ) -> Result<(), MyCustomError> {
-        let state = self.manager.kirc_state();
+        let state = self.manager.khannel_state();
         if let Some(server) = state.get_server(payload.server_id()) {
             server.set_channel_locked(payload.channel(), false);
             state.persist();
@@ -160,7 +160,7 @@ impl KircApi {
     }
 
     pub fn is_channel_locked(&self, payload: &ChannelPayload) -> Result<bool, MyCustomError> {
-        let state = self.manager.kirc_state();
+        let state = self.manager.khannel_state();
         Ok(state.is_channel_locked(payload.server_id(), payload.channel()))
     }
 
@@ -168,7 +168,7 @@ impl KircApi {
     pub fn change_nickname(&self, payload: &ChangeNickPayload) -> Result<(), MyCustomError> {
         info!(event="change_nickname", new_nick=%payload.new_nick, "Command: change nickname invoked");
 
-        let state = self.manager.kirc_state();
+        let state = self.manager.khannel_state();
         let server = state
             .get_server(payload.server_id)
             .context("Can't find server")?;
@@ -196,8 +196,8 @@ impl KircApi {
 }
 
 pub mod payload {
-    use crate::kirc::types::server::ServerConfig;
-    use crate::kirc::types::{ChannelId, ServerId, ServerStatus};
+    use crate::client::types::server::ServerConfig;
+    use crate::client::types::{ChannelId, ServerId, ServerStatus};
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Debug, Clone)]

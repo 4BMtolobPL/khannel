@@ -1,25 +1,25 @@
-use crate::kirc::core::ServerActor;
-use crate::kirc::event::EventSender;
-use crate::kirc::event::{
+use crate::client::core::ServerActor;
+use crate::client::event::EventSender;
+use crate::client::event::{
     emit_server_added, emit_server_removed, emit_server_status, emit_system_message, emit_ui_event,
 };
-use crate::kirc::state::app::AppState;
-use crate::kirc::state::kirc::KircState;
-use crate::kirc::types::server::ServerConfig;
-use crate::kirc::types::{ServerCommand, ServerId, ServerStatus};
+use crate::client::state::app::AppState;
+use crate::client::state::khannel::KhannelState;
+use crate::client::types::server::ServerConfig;
+use crate::client::types::{ServerCommand, ServerId, ServerStatus};
 use anyhow::{anyhow, Context};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info};
 
-pub struct KircManager {
-    kirc_state: Arc<KircState>,
+pub struct KhannelManager {
+    khannel_state: Arc<KhannelState>,
     app_state: AtomicU8,
     ui_sink: EventSender,
 }
 
 // private
-impl KircManager {
+impl KhannelManager {
     fn app_state(&self) -> Option<AppState> {
         AppState::from_u8(self.app_state.load(Ordering::Acquire))
     }
@@ -41,17 +41,17 @@ impl KircManager {
     }
 
     fn prepare_shutdown(&self) {
-        let _ = self.kirc_state.save_snapshot();
+        let _ = self.khannel_state.save_snapshot();
         self.set_app_state(AppState::ShuttingDown);
     }
 
-    pub fn kirc_state(&self) -> &Arc<KircState> {
-        &self.kirc_state
+    pub fn khannel_state(&self) -> &Arc<KhannelState> {
+        &self.khannel_state
     }
 
     fn run_server(&self, server_id: ServerId) -> anyhow::Result<()> {
         let server = self
-            .kirc_state
+            .khannel_state
             .get_server(server_id)
             .context("Server not found")?;
 
@@ -59,7 +59,7 @@ impl KircManager {
             server_id,
             server.clone(),
             self.ui_sink.clone(),
-            Arc::downgrade(&self.kirc_state),
+            Arc::downgrade(&self.khannel_state),
         );
         // spawn과 Connecting 전이를 원자적으로 수행 (ServerState::start_connecting 참고)
         if !server.start_connecting(|| {
@@ -73,7 +73,7 @@ impl KircManager {
 }
 
 // pub
-impl KircManager {
+impl KhannelManager {
     pub fn connect_server(
         &self,
         server_id: Option<ServerId>,
@@ -85,13 +85,13 @@ impl KircManager {
 
         let server_id = if let Some(sid) = server_id {
             // 이미 활성/Disconnecting 상태인지는 run_server(start_connecting)가 원자적으로 판정
-            if self.kirc_state.get_server(sid).is_none() {
+            if self.khannel_state.get_server(sid).is_none() {
                 return Err(anyhow!("Server not found"));
             }
             sid
         } else {
             // New server
-            let sid = self.kirc_state.add_server(config.clone())?;
+            let sid = self.khannel_state.add_server(config.clone())?;
             emit_server_added(
                 &self.ui_sink,
                 sid,
@@ -111,7 +111,7 @@ impl KircManager {
     }
 
     pub fn disconnect_server(&self, server_id: ServerId) -> anyhow::Result<()> {
-        if let Some(server) = self.kirc_state.get_server(server_id) {
+        if let Some(server) = self.khannel_state.get_server(server_id) {
             server.disconnect();
             emit_server_status(&self.ui_sink, server_id, server.status());
             Ok(())
@@ -129,7 +129,7 @@ impl KircManager {
         new_nick: &str,
     ) -> anyhow::Result<()> {
         let server = self
-            .kirc_state
+            .khannel_state
             .get_server(server_id)
             .context("Can't find server")?;
         let status = server.status();
@@ -141,7 +141,7 @@ impl KircManager {
 
         let old_nick = server.current_nickname();
         server.set_nickname(new_nick);
-        self.kirc_state.persist();
+        self.khannel_state.persist();
         info!(server_id = %server_id, new_nick = %new_nick, "Nickname changed while offline");
 
         // UI의 Server.nickname / 닉변 모달 성공 처리는 NICK 이벤트로 맞춘다
@@ -173,10 +173,10 @@ impl KircManager {
             return Err(anyhow!("Application is shutting down"));
         }
         let server = self
-            .kirc_state
+            .khannel_state
             .remove_server(server_id)
             .context("Server not found")?;
-        self.kirc_state.persist();
+        self.khannel_state.persist();
         info!(server_id = %server_id, "Server removed");
 
         // 연결 정리는 기다리지 않는다 — 액터가 남은 상태 전이/이벤트를 보내도 이미 맵에서 빠진
@@ -189,7 +189,7 @@ impl KircManager {
     }
 
     pub fn cancel_connect(&self, server_id: ServerId) -> anyhow::Result<()> {
-        if let Some(server) = self.kirc_state.get_server(server_id) {
+        if let Some(server) = self.khannel_state.get_server(server_id) {
             // 사용자 취소이므로 실제 전이 결과(Disconnected)를 그대로 알린다
             // (이전: 상태는 Disconnected인데 UI에는 Failed를 보냈다)
             if server.abort_connecting() {
@@ -202,7 +202,12 @@ impl KircManager {
     }
 
     pub fn process_auto_connect(&self) {
-        let server_ids: Vec<ServerId> = self.kirc_state.get_all_servers().keys().cloned().collect();
+        let server_ids: Vec<ServerId> = self
+            .khannel_state
+            .get_all_servers()
+            .keys()
+            .cloned()
+            .collect();
         debug!(server_id = ?server_ids, "Auto-connecting servers");
         for server_id in server_ids {
             let _ = self.run_server(server_id);
@@ -211,7 +216,7 @@ impl KircManager {
 
     pub fn join_channel(&self, server_id: ServerId, channel_name: &str) -> anyhow::Result<()> {
         let server = self
-            .kirc_state
+            .khannel_state
             .get_server(server_id)
             .context("Can't find server")?;
         server.send_command(ServerCommand::Join(channel_name.to_string()))?;
@@ -219,7 +224,7 @@ impl KircManager {
         // `locked: false` 덮어쓰기되면 안 된다 (Phase 4 정규화 이후 스냅샷 영속 대상).
         if !server.contains_channel(channel_name) {
             server.insert_channel(channel_name, false);
-            self.kirc_state.persist();
+            self.khannel_state.persist();
         }
 
         Ok(())
@@ -227,14 +232,14 @@ impl KircManager {
 
     pub fn part_channel(&self, server_id: ServerId, channel_id: &str) -> anyhow::Result<()> {
         let server = self
-            .kirc_state
+            .khannel_state
             .get_server(server_id)
             .context("Can't find server")?;
         server.send_command(ServerCommand::Part {
             channel_name: channel_id.to_string(),
         })?;
         if server.remove_channel(channel_id).is_some() {
-            self.kirc_state.persist();
+            self.khannel_state.persist();
         }
 
         Ok(())
@@ -242,10 +247,10 @@ impl KircManager {
 }
 
 // pub
-impl KircManager {
-    pub fn new(kirc_state: Arc<KircState>, ui_sink: EventSender) -> Self {
+impl KhannelManager {
+    pub fn new(khannel_state: Arc<KhannelState>, ui_sink: EventSender) -> Self {
         Self {
-            kirc_state,
+            khannel_state,
             app_state: AtomicU8::new(AppState::Running.as_u8()),
             ui_sink,
         }
@@ -256,7 +261,7 @@ impl KircManager {
         self.prepare_shutdown();
 
         // 2. 서버 drain 및 runtime 획득
-        let runtimes = self.kirc_state.drain_runtimes();
+        let runtimes = self.khannel_state.drain_runtimes();
 
         // 3. 병렬 graceful 종료
         futures::future::join_all(
@@ -274,8 +279,8 @@ impl KircManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kirc::event::UiEvent;
-    use crate::kirc::persistence::ServerStateSnapshot;
+    use crate::client::event::UiEvent;
+    use crate::client::persistence::ServerStateSnapshot;
     use std::collections::HashMap;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
@@ -292,7 +297,7 @@ mod tests {
     async fn fast_connect_failure_is_not_clobbered_by_connecting() {
         let port = closed_port().await;
         let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
-        let state = Arc::new(KircState::from_iter([ServerStateSnapshot::new(
+        let state = Arc::new(KhannelState::from_iter([ServerStateSnapshot::new(
             config.clone(),
             HashMap::new(),
         )]));
@@ -300,7 +305,7 @@ mod tests {
         let server = state.get_server(server_id).unwrap();
 
         let (tx, _rx) = unbounded_channel::<UiEvent>();
-        let manager = KircManager::new(state.clone(), Arc::new(tx));
+        let manager = KhannelManager::new(state.clone(), Arc::new(tx));
 
         for attempt in 0..200 {
             manager

@@ -1,7 +1,7 @@
-use crate::kirc::persistence::ServerStateSnapshot;
-use crate::kirc::state::channel::ChannelState;
-use crate::kirc::types::server::ServerConfig;
-use crate::kirc::types::{ChannelId, ServerCommand, ServerStatus};
+use crate::client::persistence::ServerStateSnapshot;
+use crate::client::state::channel::ChannelState;
+use crate::client::types::server::ServerConfig;
+use crate::client::types::{ChannelId, ServerCommand, ServerStatus};
 use crate::memento::Originator;
 use anyhow::anyhow;
 use std::collections::HashMap;

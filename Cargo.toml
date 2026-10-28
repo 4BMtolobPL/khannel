@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kirc-core", "crates/kirc-app"]
+members = ["crates/khannel-core", "crates/khannel"]
 
 # 공통 의존성 정의 (member crates에서 workspace = true로 상속)
 [workspace.dependencies]

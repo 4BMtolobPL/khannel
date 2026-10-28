@@ -7,11 +7,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use gpui::Context;
-use kirc_core::kirc::event::{
+use khannel_core::client::event::{
     ChangeNickFailedPayload, ChannelLockChangedEvent, ServerDetail, ServerStatusPayload,
     SystemMessagePayload, UIEventPayload, UiEvent,
 };
-use kirc_core::kirc::types::ServerId;
+use khannel_core::client::types::ServerId;
 use serde::Serialize;
 
 use crate::api::{UiApi, UiEventReceiver};
@@ -73,8 +73,8 @@ pub struct Channel {
     pub topic: Option<String>,
 }
 
-fn map_status(status: &kirc_core::kirc::types::ServerStatus) -> UiServerStatus {
-    use kirc_core::kirc::types::ServerStatus as S;
+fn map_status(status: &khannel_core::client::types::ServerStatus) -> UiServerStatus {
+    use khannel_core::client::types::ServerStatus as S;
     match status {
         S::Connecting => UiServerStatus::Connecting,
         S::Connected => UiServerStatus::Connected,
@@ -208,7 +208,7 @@ impl IrcModel {
         // 스냅샷 서버 동기화 (spawn: 비동기 컨텍스트에서 접근하기 위함)
         cx.spawn(async move |this, cx| {
             api.init();
-            // 서버 목록은 스냅샷 복원 시점에 이미 kirc_state가 갖고 있으므로 즉시 동기화.
+            // 서버 목록은 스냅샷 복원 시점에 이미 khannel_state가 갖고 있으므로 즉시 동기화.
             // 상태 전이는 ServerStatus 이벤트가 이벤트 루프를 통해 실시간 반영한다.
             let servers = api.get_servers();
             let _ = this.update(cx, |m, cx| {
@@ -673,8 +673,9 @@ impl IrcModel {
         nickname: String,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let payload =
-            kirc_core::kirc::commands::ConnectServerPayload::new(None, host, port, tls, nickname);
+        let payload = khannel_core::client::commands::ConnectServerPayload::new(
+            None, host, port, tls, nickname,
+        );
         let result = self.api.connect_server(payload).map_err(|e| {
             tracing::warn!("connect_server failed: {}", e);
             e.to_string()
@@ -855,7 +856,7 @@ impl IrcModel {
             return;
         };
 
-        let payload = kirc_core::kirc::commands::ChannelPayload::new(server_id, channel_name);
+        let payload = khannel_core::client::commands::ChannelPayload::new(server_id, channel_name);
         let result = if self.is_locked() {
             self.api.unlock_channel(&payload)
         } else {
@@ -884,8 +885,10 @@ impl IrcModel {
             return;
         }
 
-        let payload =
-            kirc_core::kirc::commands::ChannelPayload::new(channel.server_id, channel.name.clone());
+        let payload = khannel_core::client::commands::ChannelPayload::new(
+            channel.server_id,
+            channel.name.clone(),
+        );
 
         if let Err(e) = self.api.leave_channel(&payload) {
             tracing::warn!("leave_channel failed: {}", e);
@@ -933,7 +936,7 @@ impl IrcModel {
             return;
         };
 
-        let payload = kirc_core::kirc::commands::ConnectServerPayload::new(
+        let payload = khannel_core::client::commands::ConnectServerPayload::new(
             Some(server_id),
             server.host.clone(),
             server.port,
@@ -949,7 +952,7 @@ impl IrcModel {
     // ChangeNicknameModal 제출에서 사용.
     pub fn change_nickname(&mut self, server_id: ServerId, new_nick: &str, cx: &mut Context<Self>) {
         let payload =
-            kirc_core::kirc::commands::ChangeNickPayload::new(server_id, new_nick.to_string());
+            khannel_core::client::commands::ChangeNickPayload::new(server_id, new_nick.to_string());
         match self.api.change_nickname(&payload) {
             Ok(()) => self.nick_change.request(server_id, new_nick),
             Err(e) => {

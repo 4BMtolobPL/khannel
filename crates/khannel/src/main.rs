@@ -1,4 +1,4 @@
-//! kirc-app: GPUI 기반 IRC 클라이언트.
+//! khannel: GPUI 기반 IRC 클라이언트.
 //!
 //! Phase 2: 코어 뼈대(경로/로깅/런처) + tokio 브리지 + IrcModel/ChatApp 엔티티.
 
@@ -9,6 +9,7 @@ mod overlay;
 mod theme;
 mod ui;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,17 +18,17 @@ use gpui::{
     TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions,
 };
 use gpui_platform::application;
-use kirc_core::fs;
-use kirc_core::kirc::persistence::KircStateSnapshot;
-use kirc_core::logging;
-use kirc_core::memento::Memento;
+use khannel_core::client::persistence::KhannelStateSnapshot;
+use khannel_core::fs;
+use khannel_core::logging;
+use khannel_core::memento::Memento;
 
 use crate::action::{
     Backspace, Copy, Cut, Delete, DeleteWordLeft, DeleteWordRight, Dismiss, End, Home, Left, Paste,
     Quit, Right, SelectAll, SelectLeft, SelectRight, SelectWordLeft, SelectWordRight, WordLeft,
     WordRight,
 };
-use crate::api::{build_kirc, setup, UiApi};
+use crate::api::{build_khannel, setup, UiApi};
 use crate::model::IrcModel;
 use crate::ui::chat_app::ChatApp;
 
@@ -38,7 +39,7 @@ struct MainModel(Entity<IrcModel>);
 impl Global for MainModel {}
 
 /// 앱 식별자 — 데이터 디렉토리, Wayland app_id 공통.
-const APP_ID: &str = "com.kimtalmo.kirc-rs";
+const APP_ID: &str = "com.kimtalmo.khannel";
 
 /// Graceful shutdown에 허용하는 최대 대기 시간.
 ///
@@ -47,16 +48,15 @@ const APP_ID: &str = "com.kimtalmo.kirc-rs";
 /// - 스냅샷 저장은 drain 이전에 동기로 완료되므로, 캡을 넘어도 상태 유실은 없다.
 const SHUTDOWN_MAX_WAIT: Duration = Duration::from_millis(600);
 
-fn app_data_dir() -> std::path::PathBuf {
-    // Tauri app_data_dir(XDG data dir / identifier)과 동일 경로를 유지해
-    // 기존 Tauri 앱이 만든 config.json을 그대로 읽고 쓴다 (Phase 4 패리티 #3).
-    // - Linux:  ~/.local/share/com.kimtalmo.kirc-rs
-    // - macOS:  ~/Library/Application Support/com.kimtalmo.kirc-rs
+/// 앱 데이터 폴더 (XDG data dir / identifier)
+/// - Linux:  ~/.local/share/com.kimtalmo.khannel
+/// - macOS:  ~/Library/Application Support/com.kimtalmo.khannel
+fn app_data_dir() -> PathBuf {
     let mut base = directories::BaseDirs::new()
         .map(|d| d.data_dir().join(APP_ID))
-        .unwrap_or_else(|| std::env::home_dir().unwrap().join(".kirc-rs"));
+        .unwrap_or_else(|| std::env::home_dir().unwrap().join(format!(".{APP_ID}")));
 
-    // Tauri 앱의 app_data_dir + "/dev" 레이아웃 개념은 debug 빌드에서 유지
+    // debug 빌드는 별도 하위 폴더를 쓴다 (개발 중 데이터가 릴리스 데이터와 섞이지 않게)
     if cfg!(debug_assertions) {
         base.push("dev");
     }
@@ -73,13 +73,13 @@ fn main() {
     let dir = app_data_dir();
     std::fs::create_dir_all(&dir).expect("app data dir create failed");
     let config_path = dir.join("config.json");
-    let snapshot: KircStateSnapshot = fs::load(&config_path).expect("snapshot load failed");
+    let snapshot: KhannelStateSnapshot = fs::load(&config_path).expect("snapshot load failed");
 
     let mut state = snapshot.restore();
     state.set_persistence_path(&config_path);
 
-    let kirc_api = build_kirc(ui_sink.clone(), state);
-    let api = Arc::new(UiApi::new(rt, kirc_api, ui_sink));
+    let khannel_api = build_khannel(ui_sink.clone(), state);
+    let api = Arc::new(UiApi::new(rt, khannel_api, ui_sink));
 
     // 2. GPUI 앱 실행
     let app = application();
@@ -103,7 +103,7 @@ fn main() {
         // (Linux에서는 gpui가 메뉴를 그리지 않으므로 등록하지 않는다.)
         if cfg!(target_os = "macos") {
             cx.set_menus([Menu {
-                name: "kirc-rs".into(),
+                name: "khannel".into(),
                 items: vec![MenuItem::action("종료", Quit)],
                 disabled: false,
             }]);
@@ -198,7 +198,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", Home, None),
         KeyBinding::new("end", End, None),
     ]);
-    // Esc → 모달/컨텍스트 메뉴 닫기 (kirc::Dismiss)
+    // Esc → 모달/컨텍스트 메뉴 닫기 (khannel::Dismiss)
     cx.bind_keys([KeyBinding::new("escape", Dismiss, None)]);
 }
 
@@ -212,7 +212,7 @@ fn open_main_window(model: Entity<IrcModel>, cx: &mut App) {
             // - macOS: 내용이 창 맨 위까지 차고, 신호등 버튼만 그 위에 얹힌다.
             // - Linux: client-side decorations — 닫기 버튼/창 이동/리사이즈를 앱이 처리한다.
             titlebar: Some(TitlebarOptions {
-                title: Some("kirc-rs".into()),
+                title: Some("khannel".into()),
                 appears_transparent: true,
                 // zeron: 신호등(높이 14) 중심 y=21 = 38px 컨트롤 줄 + 위쪽 패딩 4의 중심
                 traffic_light_position: Some(point(px(14.), px(14.))),
