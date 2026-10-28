@@ -356,6 +356,16 @@ Tauri 버전과 나란히 실행해 다음을 검증:
    "Already connecting"으로 거부된다. 수정: spawn 전에 Connecting 확정 + 불일치 시 복원.
    - 1번 테스트 작성 중 재현: Connecting을 거치지 않고 액터를 돌리면 `transition_to_registering`이
      tx를 버려 커맨드 채널이 즉시 닫히고 세션이 Registering 직후 종료된다(불일치 시 값 유실 확인).
+   - **해결 (2026-10-28)**: `ServerState::start_connecting(spawn)` — Disconnected/Failed일 때만
+     runtime 락 안에서 액터를 spawn하고 Connecting으로 전이(spawn↔전이 원자화,
+     `transition_to_connecting` 제거). `transition_to_registering`/`_connected`는 불일치 시
+     현재 상태를 복원. 부수 효과로 **Disconnecting 중 재연결 거부** — 이전엔 허용되어 옛 액터의
+     종료 전이(`transition_to_disconnected`)가 새 세션 상태를 덮어쓸 수 있었다.
+     `connect_server`의 `is_active` 사전 검사(TOCTOU)는 제거하고 `run_server`가 판정.
+   - 테스트: `state::server::tests`에 4건(유휴 상태에서만 시작 / Disconnecting 중 거부 /
+     불일치 전이 시 상태 유지 / 즉시 실패하는 액터가 Failed로 끝남),
+     `manager::tests::fast_connect_failure_is_not_clobbered_by_connecting`(실패 후 재연결
+     200회 스모크). 실제 네트워크 경로로는 타이밍상 재현되지 않아 경쟁은 상태 머신 단위로 검증.
 3. **컨텍스트 메뉴 클릭 통과 + 항목 선택 후 안 닫힘** (`chat_app.rs` 메뉴 렌더, `context_menu.rs`).
    `occlude()`가 없으면 gpui는 아래 hitbox도 hovered로 판정(`window.rs` `Hitbox::is_hovered`)
    → "Disconnect" 등 클릭 시 아래 서버/채널 row의 `on_click`도 실행되고 hover도 켜진다.

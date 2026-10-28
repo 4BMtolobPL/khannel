@@ -53,11 +53,14 @@ impl KircManager {
             .get_server(server_id)
             .context("Server not found")?;
 
-        info!(server_id = %server_id, "Spawn server actor");
         let actor = ServerActor::new(server_id, server.clone(), self.ui_sink.clone());
-        let handle = tokio::spawn(actor.run());
-
-        server.transition_to_connecting(handle);
+        // spawn과 Connecting 전이를 원자적으로 수행 (ServerState::start_connecting 참고)
+        if !server.start_connecting(|| {
+            info!(server_id = %server_id, "Spawn server actor");
+            tokio::spawn(actor.run())
+        }) {
+            return Err(anyhow!("Already connecting, connected or disconnecting"));
+        }
         Ok(())
     }
 }
@@ -74,14 +77,11 @@ impl KircManager {
         }
 
         let server_id = if let Some(sid) = server_id {
-            if let Some(server) = self.kirc_state.get_server(sid) {
-                if server.is_active() {
-                    return Err(anyhow!("Already connecting or connected"));
-                }
-                sid
-            } else {
+            // 이미 활성/Disconnecting 상태인지는 run_server(start_connecting)가 원자적으로 판정
+            if self.kirc_state.get_server(sid).is_none() {
                 return Err(anyhow!("Server not found"));
             }
+            sid
         } else {
             // New server
             let sid = self.kirc_state.add_server(config.clone())?;
@@ -188,5 +188,53 @@ impl KircManager {
 
         // 4. 최종 상태 AppState -> Terminated
         self.complete_shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kirc::event::UiEvent;
+    use crate::kirc::persistence::ServerStateSnapshot;
+    use std::collections::HashMap;
+    use std::time::Duration;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    /// 연결 즉시 거부되는 포트 (bind 후 바로 닫는다)
+    async fn closed_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// 연결 실패(connection refused) 후 상태가 Failed로 남고 재연결이 반복 가능해야 한다.
+    /// (경쟁 자체의 결정적 검증은 state::server 테스트의 immediate_actor_failure_ends_in_failed)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fast_connect_failure_is_not_clobbered_by_connecting() {
+        let port = closed_port().await;
+        let config = ServerConfig::new("127.0.0.1".to_string(), port, false, "nick".to_string());
+        let state = Arc::new(KircState::from_iter([ServerStateSnapshot::new(
+            config.clone(),
+            HashMap::new(),
+        )]));
+        let server_id = *state.get_all_servers().keys().next().unwrap();
+        let server = state.get_server(server_id).unwrap();
+
+        let (tx, _rx) = unbounded_channel::<UiEvent>();
+        let manager = KircManager::new(state.clone(), Arc::new(tx));
+
+        for attempt in 0..200 {
+            manager
+                .connect_server(Some(server_id), config.clone())
+                .unwrap_or_else(|e| panic!("attempt {attempt}: reconnect refused: {e}"));
+
+            // 액터가 실패를 기록할 때까지 대기 (Connecting에 갇히면 타임아웃)
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while server.status() != ServerStatus::Failed {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("attempt {attempt}: stuck in {:?}", server.status()));
+        }
     }
 }

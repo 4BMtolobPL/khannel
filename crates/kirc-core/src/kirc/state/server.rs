@@ -184,26 +184,42 @@ impl ServerState {
         }
     }
 
-    pub fn transition_to_connecting(&self, handle: JoinHandle<()>) {
+    /// 연결 시작: Disconnected/Failed일 때만 `spawn`(액터 기동)을 실행하고 Connecting으로 전이한다.
+    ///
+    /// spawn을 runtime 락 안에서 수행하므로 액터의 다음 전이(registering/failed)는 반드시
+    /// Connecting 확정 이후에 일어난다. (spawn 후 전이하던 이전 구현은 빠른 연결 실패 시
+    /// Failed를 `Connecting{종료된 handle}`로 덮어써 재연결이 영구 거부됐다.)
+    /// 이미 활성/Disconnecting 상태면 spawn하지 않고 false를 반환한다.
+    pub fn start_connecting(&self, spawn: impl FnOnce() -> JoinHandle<()>) -> bool {
         let mut guard = self.runtime.lock().unwrap();
-        if let ServerRuntime::Disconnected | ServerRuntime::Failed { .. } =
-            std::mem::take(&mut *guard)
-        {
-            *guard = ServerRuntime::Connecting { handle };
+        match &*guard {
+            ServerRuntime::Disconnected | ServerRuntime::Failed { .. } => {
+                *guard = ServerRuntime::Connecting { handle: spawn() };
+                true
+            }
+            _ => false,
         }
     }
 
+    /// 상태가 Connecting이 아니면(예: 취소됨) 현재 상태를 유지하고 tx는 버린다.
     pub fn transition_to_registering(&self, tx: UnboundedSender<ServerCommand>) {
         let mut guard = self.runtime.lock().unwrap();
-        if let ServerRuntime::Connecting { handle } = std::mem::take(&mut *guard) {
-            *guard = ServerRuntime::Registering { tx, handle };
+        match std::mem::take(&mut *guard) {
+            ServerRuntime::Connecting { handle } => {
+                *guard = ServerRuntime::Registering { tx, handle };
+            }
+            other => *guard = other,
         }
     }
 
+    /// 상태가 Registering이 아니면(예: Disconnecting) 현재 상태를 유지한다.
     pub fn transition_to_connected(&self) {
         let mut guard = self.runtime.lock().unwrap();
-        if let ServerRuntime::Registering { tx, handle } = std::mem::take(&mut *guard) {
-            *guard = ServerRuntime::Connected { tx, handle };
+        match std::mem::take(&mut *guard) {
+            ServerRuntime::Registering { tx, handle } => {
+                *guard = ServerRuntime::Connected { tx, handle };
+            }
+            other => *guard = other,
         }
     }
 
@@ -291,5 +307,83 @@ mod tests {
         // 기존 항목이 있으면 join_channel은 insert하지 않는다 → lock 유지가 전제가 된다.
         assert!(server.is_channel_locked("#test"));
         assert!(!server.contains_channel("#missing"));
+    }
+
+    #[tokio::test]
+    async fn start_connecting_only_from_idle_states() {
+        let server = test_server();
+
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        assert_eq!(server.status(), ServerStatus::Connecting);
+
+        // 활성 상태에서는 spawn 자체가 일어나지 않는다
+        let mut spawned = false;
+        assert!(!server.start_connecting(|| {
+            spawned = true;
+            tokio::spawn(async {})
+        }));
+        assert!(!spawned);
+
+        // Failed에서는 재시작 가능
+        server.transition_to_failed("refused".to_string());
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        assert_eq!(server.status(), ServerStatus::Connecting);
+    }
+
+    #[tokio::test]
+    async fn start_connecting_refused_while_disconnecting() {
+        let server = test_server();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        server.transition_to_registering(tx);
+        server.disconnect();
+        assert_eq!(server.status(), ServerStatus::Disconnecting);
+
+        // 이전 액터가 아직 끝나지 않았으므로 새 액터를 띄우면 안 된다
+        // (띄우면 이전 액터의 종료 전이가 새 세션 상태를 덮어쓴다)
+        assert!(!server.start_connecting(|| tokio::spawn(async {})));
+        assert_eq!(server.status(), ServerStatus::Disconnecting);
+    }
+
+    #[tokio::test]
+    async fn mismatched_transitions_keep_current_state() {
+        let server = test_server();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Disconnected에서 registering/connected 전이는 no-op
+        server.transition_to_registering(tx.clone());
+        assert_eq!(server.status(), ServerStatus::Disconnected);
+        server.transition_to_connected();
+        assert_eq!(server.status(), ServerStatus::Disconnected);
+
+        // Disconnecting 중 늦게 도착한 RPL_WELCOME은 Disconnecting을 덮어쓰지 않는다
+        // (이전 구현은 Disconnected로 바꾸며 handle을 유실했다)
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        server.transition_to_registering(tx);
+        server.disconnect();
+        server.transition_to_connected();
+        assert_eq!(server.status(), ServerStatus::Disconnecting);
+    }
+
+    /// 액터가 락 대기 없이 곧바로 실패를 기록하려 해도 Connecting 확정 이후에 반영된다.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn immediate_actor_failure_ends_in_failed() {
+        let server = std::sync::Arc::new(test_server());
+        let actor_server = server.clone();
+
+        assert!(server.start_connecting(move || {
+            tokio::spawn(async move {
+                actor_server.transition_to_failed("refused".to_string());
+            })
+        }));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while server.status() != ServerStatus::Failed {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failure was clobbered by Connecting");
+        assert_eq!(server.last_error().as_deref(), Some("refused"));
     }
 }
