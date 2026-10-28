@@ -1,0 +1,111 @@
+name: 'release'
+
+# `v*` 태그를 push하면 macOS arm64 dmg와 Fedora RPM(+SRPM)을 만들어 GitHub Release **초안**에 올린다.
+# 초안을 확인한 뒤 웹에서 직접 게시한다(게시 이벤트는 이후 Homebrew Cask 갱신에 쓴다).
+# 태그는 접두어 없이 Cargo 버전과 같아야 한다: version = "1.0.0" → v1.0.0
+# 수동 실행(workflow_dispatch)은 빌드와 아티팩트 업로드까지만 한다 — 태그 전 시험용.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag = Cargo version
+        id: check
+        run: |
+          # [workspace.package]의 version (cargo pkgid는 git 의존성을 받아야 해서 쓰지 않는다)
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::태그 $GITHUB_REF_NAME 가 Cargo 버전 $version 과 다르다"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: version
+    runs-on: macos-latest # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      # CI 환경변수가 있으면 cargo-packager가 dmg 창 배치(Finder AppleScript)를 건너뛴다 — 러너에서 Finder 자동화가
+      # 불안정해서. 내용(앱 + Applications 링크)은 같다. 서명은 ad-hoc(`APPLE_SIGNING_IDENTITY` 시크릿을 두면 Developer ID).
+      - name: package
+        run: dist/macos/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: target/release/khannel-${{ needs.version.outputs.version }}-macos-arm64.dmg
+          if-no-files-found: error
+
+  fedora:
+    needs: version
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      # checkout이 .git을 남기도록(make-srpm.sh가 `git archive`를 쓴다) git을 먼저 설치
+      - name: install tools
+        run: dnf -y install git rpm-build cargo-vendor-filterer 'dnf5-command(builddep)'
+
+      - uses: actions/checkout@v4
+
+      - name: install build dependencies
+        run: dnf -y builddep dist/rpm/khannel.spec
+
+      - name: build SRPM
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          dist/rpm/make-srpm.sh "$PWD/target/rpm"
+
+      - name: build RPM
+        run: |
+          rpmbuild --rebuild --define "_topdir $PWD/target/rpmbuild" target/rpm/khannel-*.src.rpm
+          mkdir -p target/out
+          cp target/rpm/khannel-*.src.rpm target/out/
+          cp target/rpmbuild/RPMS/x86_64/khannel-${{ needs.version.outputs.version }}-*.x86_64.rpm target/out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora
+          path: target/out/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, macos, fedora]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "khannel ${{ needs.version.outputs.version }}" \
+            --generate-notes

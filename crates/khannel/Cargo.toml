@@ -1,0 +1,49 @@
+[package]
+name = "khannel"
+description = "IRC client for macOS and Linux built with GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed.git" }
+# 앱 부트스트랩(Platform 제공)은 gpui_platform 크레이트가 담당.
+# 대상 OS(Linux X11/Wayland + macOS)에 맞춰 linux 백엔드 feature를 켠다.
+# font-kit: macOS에서 텍스트가 아예 렌더되지 않는 문제의 수정 서페이스
+# (font-kit은 gpui_macos에만 노출되므로 linux 빌드에는 영향 없음).
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = [
+    "wayland",
+    "x11",
+    "font-kit",
+] }
+khannel-core = { path = "../khannel-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+chrono = { workspace = true }
+uuid.workspace = true
+tracing = { workspace = true }
+directories = "6"
+unicode-segmentation = "1"
+
+# macOS .app/.dmg 패키징 (cargo-packager). 경로는 이 파일 기준. 보통 `dist/macos/package.sh`로 실행한다
+# (dmg 이름 정리 + 공증까지). 서명은 cargo-packager가 아니라 dmg를 만들기 직전 훅(`sign-app.sh`)에서 한다 —
+# cargo-packager는 ad-hoc 서명(`-`)에도 `--timestamp`/hardened runtime을 붙이고 식별자를 환경변수로 바꿀 수 없다.
+[package.metadata.packager]
+product-name = "khannel"
+identifier = "com.kimtalmo.khannel"
+category = "SocialNetworking"
+copyright = "Copyright © 2026 Talmo Kim"
+license-file = "../../LICENSE"
+icons = ["../../dist/macos/icons/*.png"]
+formats = ["app", "dmg"]
+before-packaging-command = "cargo build --release --locked -p khannel"
+before-each-package-command = "../../dist/macos/sign-app.sh"
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"

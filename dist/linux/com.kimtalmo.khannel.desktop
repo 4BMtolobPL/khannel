@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=khannel
+GenericName=IRC Client
+Comment=IRC client built with GPUI
+Exec=khannel
+Icon=com.kimtalmo.khannel
+Terminal=false
+Categories=Network;Chat;IRCClient;
+Keywords=irc;chat;
+StartupNotify=true
+StartupWMClass=com.kimtalmo.khannel
