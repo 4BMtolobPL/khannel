@@ -1,7 +1,7 @@
 name: 'publish'
 
 # GitHub Release를 게시하면(release.yml이 만든 초안을 웹에서 Publish) 배포 채널에 내보낸다.
-# - COPR: Release에 붙은 SRPM을 is2ogc3tc2/khannel에 제출 (chroot: fedora-44/45/rawhide x86_64)
+# - COPR: Release에 붙은 SRPM을 is2ogc3tc2/khannel에 제출 (chroot: fedora-44/45/rawhide, x86_64·aarch64)
 # - Homebrew: dist/homebrew/khannel.rb에 버전과 dmg sha256을 채워 4BMtolobPL/homebrew-tap의 Casks/khannel.rb로 push
 # 실패했거나 다시 내보내려면 Actions 탭에서 태그를 지정해 수동 실행한다.
 #
@@ -26,7 +26,7 @@ jobs:
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-24.04
     container: fedora:44
-    # COPR 빌드를 끝까지 기다린다(실패하면 job도 실패) — chroot 3개를 병렬로 빌드
+    # COPR 빌드를 끝까지 기다린다(실패하면 job도 실패) — chroot 6개를 병렬로 빌드
     timeout-minutes: 300
     steps:
       - name: install tools
