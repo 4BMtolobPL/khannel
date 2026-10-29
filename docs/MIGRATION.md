@@ -713,6 +713,16 @@ Tauri 버전과 나란히 실행해 다음을 검증:
         mock 실행 전에 실패했다. `copr-cli regenerate-repos` 후 chroot별 저장소가 생기기까지 30분~1시간 넘게 걸렸다.
       - 이 계정의 새 프로젝트는 저장소가 Pulp(`packages.redhat.com/api/pulp-content/public-copr/<owner>/<project>/<chroot>/`)에
         있다(`download.copr…/results/…`에는 빌드 로그만). 본 프로젝트 `khannel`은 세 chroot 저장소가 이미 준비돼 있어 해당 없음.
+    - COPR 프로젝트 설명·설치 안내(영어, `dnf copr enable`)를 `copr-cli modify`로 설정.
+  - **P4 Homebrew Cask (2026-10-29)**:
+    - Cask 원본은 khannel 저장소의 `dist/homebrew/khannel.rb` 템플릿(`@VERSION@`, `@SHA256@`). `publish.yml`의 `homebrew` job이
+      릴리스 게시 때 태그 시점 템플릿 + Release의 dmg sha256으로 채워 tap `4BMtolobPL/homebrew-tap`의 `Casks/khannel.rb`에 직접
+      push(`HOMEBREW_TAP_TOKEN`, 변경 없으면 건너뜀). tap에 미리 넣지 않는 이유: 릴리스 전이면 dmg URL이 404인 Cask가 된다.
+    - 내용: arm64 전용(`depends_on arch: :arm64`, `depends_on :macos` — Homebrew 7 `OSDependsOn` 규칙), livecheck는
+      GitHub 최신 릴리스, `zap`은 앱 데이터 폴더와 Saved Application State, Gatekeeper "Open Anyway" 안내 caveat.
+      격리 속성을 지우는 postflight는 넣지 않았다(Gatekeeper 우회).
+    - 검증: 로컬 임시 tap에서 `brew style` 통과(스탠자 순서는 `--fix` 결과와 동일). `brew audit --strict --online`의 남은
+      지적은 릴리스 전이라 생기는 것뿐(dmg 404, livecheck가 옛 `0.1.0` 릴리스를 봄).
 
 ---
 

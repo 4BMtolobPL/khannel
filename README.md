@@ -172,8 +172,9 @@ CI(`.github/workflows/main.yml`)는 push/PR마다 Ubuntu와 macOS에서 fmt/clip
 - macOS(Apple Silicon): `khannel-<버전>-macos-arm64.dmg` (ad-hoc 서명)
 - Fedora: `khannel-<버전>-1.fc44.x86_64.rpm`, SRPM
 
-초안을 게시하면 `.github/workflows/publish.yml`이 SRPM을 COPR(`is2ogc3tc2/khannel`)에 제출합니다
-(저장소 시크릿 `COPR_CONFIG` 필요).
+초안을 게시하면 `.github/workflows/publish.yml`이 SRPM을 COPR(`is2ogc3tc2/khannel`)에 제출하고,
+`dist/homebrew/khannel.rb` 템플릿에 버전과 dmg sha256을 채워 Homebrew tap(`4BMtolobPL/homebrew-tap`)의
+`Casks/khannel.rb`를 갱신합니다(저장소 시크릿 `COPR_CONFIG`, `HOMEBREW_TAP_TOKEN` 필요).
 release 워크플로를 Actions 탭에서 수동 실행하면 릴리스 없이 빌드만 하고 결과물을 아티팩트로 올립니다.
 태그 전에 `dist/linux/com.kimtalmo.khannel.metainfo.xml`의 `<release>` 날짜를 갱신하고,
 의존성이 바뀌었으면 `THIRD_PARTY_NOTICES.md`를 다시 생성합니다(아래 라이선스 참고).
@@ -202,6 +203,7 @@ debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다.
 - `rpm/khannel.spec`, `rpm/make-srpm.sh` — Fedora RPM. `make-srpm.sh`가 현재 커밋과 Linux 대상으로 거른 vendor
   tarball로 SRPM을 만들고(`cargo-vendor-filterer` 필요), RPM 빌드는 오프라인으로 진행됩니다.
   COPR는 `.copr/Makefile`에서 같은 스크립트를 씁니다.
+- `homebrew/khannel.rb` — Homebrew Cask 템플릿(`@VERSION@`, `@SHA256@`은 릴리스 게시 때 채워짐)
 
 ## 라이선스
 

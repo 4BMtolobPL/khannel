@@ -2,10 +2,12 @@ name: 'publish'
 
 # GitHub Release를 게시하면(release.yml이 만든 초안을 웹에서 Publish) 배포 채널에 내보낸다.
 # - COPR: Release에 붙은 SRPM을 is2ogc3tc2/khannel에 제출 (chroot: fedora-44/45/rawhide x86_64)
+# - Homebrew: dist/homebrew/khannel.rb에 버전과 dmg sha256을 채워 4BMtolobPL/homebrew-tap의 Casks/khannel.rb로 push
 # 실패했거나 다시 내보내려면 Actions 탭에서 태그를 지정해 수동 실행한다.
 #
-# 필요한 시크릿: COPR_CONFIG — https://copr.fedorainfracloud.org/api/ 의 ~/.config/copr 내용
-#   (토큰 만료 시 다시 발급해 갱신)
+# 필요한 시크릿:
+# - COPR_CONFIG — https://copr.fedorainfracloud.org/api/ 의 ~/.config/copr 내용 (토큰 만료 시 다시 발급해 갱신)
+# - HOMEBREW_TAP_TOKEN — homebrew-tap 저장소에만 Contents 읽기/쓰기 권한이 있는 fine-grained PAT
 
 on:
   release:
@@ -42,3 +44,52 @@ jobs:
           mkdir -p ~/.config
           printf '%s\n' "$COPR_CONFIG" > ~/.config/copr
           copr-cli build is2ogc3tc2/khannel ./*.src.rpm
+
+  homebrew:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    steps:
+      # Cask 템플릿은 릴리스 태그 시점의 것을 쓴다
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: download dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*-macos-arm64.dmg'
+
+      - name: render cask
+        run: |
+          version="${TAG#v}"
+          sha256="$(sha256sum "khannel-$version-macos-arm64.dmg" | cut -d ' ' -f 1)"
+          mkdir -p out
+          # 맨 앞의 `#` 주석 줄(템플릿 설명)은 빼고 올린다
+          sed -e '/^#/d' -e "s/@VERSION@/$version/" -e "s/@SHA256@/$sha256/" \
+            dist/homebrew/khannel.rb > out/khannel.rb
+          if grep -n '@[A-Z0-9_]*@' out/khannel.rb; then
+            echo "::error::채워지지 않은 자리표시자가 있다"
+            exit 1
+          fi
+          cat out/khannel.rb
+
+      - uses: actions/checkout@v4
+        with:
+          repository: 4BMtolobPL/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: push to tap
+        run: |
+          mkdir -p tap/Casks
+          cp out/khannel.rb tap/Casks/khannel.rb
+          cd tap
+          git add Casks/khannel.rb
+          if git diff --cached --quiet; then
+            echo "Casks/khannel.rb 변경 없음"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "khannel ${TAG#v}"
+          git push
