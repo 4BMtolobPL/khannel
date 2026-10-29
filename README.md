@@ -2,6 +2,39 @@
 
 [GPUI](https://gpui.rs/)와 Rust로 만든 현대적인 데스크톱 IRC 클라이언트입니다.
 
+## 설치
+
+### macOS (Apple Silicon, macOS 11 이상)
+
+[Homebrew](https://brew.sh/)로 설치합니다.
+
+```bash
+brew install --cask 4bmtolobpl/tap/khannel
+```
+
+khannel은 Apple 공증을 받지 않은 앱(ad-hoc 서명)이라 처음 실행할 때 macOS가 막습니다.
+한 번 실행을 시도한 뒤 **시스템 설정 > 개인정보 보호 및 보안**에서 khannel 항목의 **그래도 열기**를 누르면
+이후로는 바로 열립니다.
+
+삭제는 `brew uninstall --cask khannel`, 저장된 서버 설정까지 지우려면 `brew uninstall --cask --zap khannel`입니다.
+
+### Fedora (44, 45, Rawhide / x86_64)
+
+[COPR](https://copr.fedorainfracloud.org/coprs/is2ogc3tc2/khannel/) 저장소에서 설치합니다.
+
+```bash
+sudo dnf copr enable is2ogc3tc2/khannel
+sudo dnf install khannel
+```
+
+이후 업데이트는 `sudo dnf upgrade`로 받습니다. 삭제는 `sudo dnf remove khannel`입니다.
+
+### 직접 내려받기
+
+[GitHub Releases](https://github.com/4BMtolobPL/khannel/releases)에서 macOS용 `.dmg`와 Fedora 44용 `.rpm`을
+받을 수 있습니다. dmg는 열어서 khannel을 응용 프로그램 폴더로 옮기고(첫 실행은 위의 "그래도 열기" 참고),
+rpm은 `sudo dnf install ./khannel-<버전>-1.fc44.x86_64.rpm`으로 설치합니다.
+
 ## 기술 스택
 
 | 레이어       | 기술                                                        |

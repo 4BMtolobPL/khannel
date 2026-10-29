@@ -723,6 +723,11 @@ Tauri 버전과 나란히 실행해 다음을 검증:
       격리 속성을 지우는 postflight는 넣지 않았다(Gatekeeper 우회).
     - 검증: 로컬 임시 tap에서 `brew style` 통과(스탠자 순서는 `--fix` 결과와 동일). `brew audit --strict --online`의 남은
       지적은 릴리스 전이라 생기는 것뿐(dmg 404, livecheck가 옛 `0.1.0` 릴리스를 봄).
+  - **P6 문서 (2026-10-29)**: README 맨 앞에 **설치** 섹션 — macOS `brew install --cask 4bmtolobpl/tap/khannel` +
+    Gatekeeper "그래도 열기"(시스템 설정 > 개인정보 보호 및 보안) + 삭제/`--zap`, Fedora `dnf copr enable` + 업데이트/삭제,
+    GitHub Releases 직접 내려받기(dmg, Fedora 44 rpm). tap 저장소 README에 cask 설치법과 khannel 항목 추가(tap 쪽 커밋).
+  - **남은 일 (v1.0.0 태그)**: 시크릿 `COPR_CONFIG` 등록 → metainfo `<release>` 날짜 갱신(+ 의존성 바뀌었으면 notices 재생성)
+    → `v1.0.0` 태그 push → Release 초안 확인 후 게시 → publish.yml(COPR, Cask) 결과 확인 → `brew install --cask`/`dnf copr` 설치 확인.
 
 ---
 
