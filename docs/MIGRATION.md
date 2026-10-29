@@ -695,8 +695,39 @@ Tauri 버전과 나란히 실행해 다음을 검증:
       ④ 세 파일을 GitHub Release **초안**으로(`--generate-notes`). 게시는 사용자가 웹에서 — 게시 이벤트를 P4 Cask 갱신에 쓴다.
     - `workflow_dispatch`: 빌드와 아티팩트 업로드만(릴리스 없음) — 태그 전 시험용. 워크플로 파일이 기본 브랜치에 있어야 실행 가능.
     - CI에서는 cargo-packager가 dmg 창 배치(Finder AppleScript)를 건너뛴다(`CI` 환경변수). 내용은 같다.
-    - 검증: 로컬에서 BuildRequires가 Fedora 44 저장소에서 모두 풀리는 것 확인. 워크플로 실행 자체는 아직 미검증
-      (컨테이너 실행 권한 없음, 태그/병합 전).
+    - 검증: 로컬에서 BuildRequires가 Fedora 44 저장소에서 모두 풀리는 것 확인. master 병합(#68) 후 사용자가
+      수동 실행(workflow_dispatch)으로 macos/fedora job 정상 완료 확인.
+  - **릴리스 브랜치 없음 (사용자 결정)**: 릴리스는 태그로만 표시한다. 옛 `release` 브랜치(Tauri 워크플로용, 보호 브랜치)는
+    사용자가 따로 정리. 이전 버전에 패치가 필요해지면 그때 태그에서 `release/X.Y`를 만든다(release.yml은 태그 기준이라 그대로 동작).
+  - **P3 COPR (2026-10-29)** — `.github/workflows/publish.yml`:
+    - GitHub Release **게시**(`release: published`, 프리릴리스 제외) → `fedora:44` 컨테이너에서 Release의 SRPM을 받아
+      `copr-cli build is2ogc3tc2/khannel`로 제출하고 빌드 완료까지 대기. 같은 SRPM을 GitHub Release와 COPR가 공유한다.
+      실패 시 수동 실행(태그 입력)으로 재제출.
+    - SCM/make_srpm 웹훅 대신 이 방식을 쓴 이유: 웹훅은 push마다 빌드되고, 태그 시점의 SRPM과 COPR 빌드가 달라질 수 있다.
+      `.copr/Makefile`은 COPR 웹 UI에서 수동으로 SCM 빌드할 때를 위해 유지.
+    - 저장소 시크릿 `COPR_CONFIG`(= `~/.config/copr` 내용, API 토큰은 주기적으로 만료 → 갱신 필요).
+    - **시험 빌드 (사용자 결정: 임시 프로젝트 `khannel-test`에서 확인 후 삭제)**: 로컬 SRPM(master `f57fa31`)으로
+      fedora-44/45/rawhide x86_64 모두 성공, `%check`(검증 + 테스트 59개) 통과. 제출~완료 40~75분(빌더마다 다름) —
+      publish.yml의 `timeout-minutes: 300` 안.
+      - 새로 만든 프로젝트는 chroot 저장소가 생성되기 전이라 첫 빌드가 "Giving up waiting for copr_base repository"로
+        mock 실행 전에 실패했다. `copr-cli regenerate-repos` 후 chroot별 저장소가 생기기까지 30분~1시간 넘게 걸렸다.
+      - 이 계정의 새 프로젝트는 저장소가 Pulp(`packages.redhat.com/api/pulp-content/public-copr/<owner>/<project>/<chroot>/`)에
+        있다(`download.copr…/results/…`에는 빌드 로그만). 본 프로젝트 `khannel`은 세 chroot 저장소가 이미 준비돼 있어 해당 없음.
+    - COPR 프로젝트 설명·설치 안내(영어, `dnf copr enable`)를 `copr-cli modify`로 설정.
+  - **P4 Homebrew Cask (2026-10-29)**:
+    - Cask 원본은 khannel 저장소의 `dist/homebrew/khannel.rb` 템플릿(`@VERSION@`, `@SHA256@`). `publish.yml`의 `homebrew` job이
+      릴리스 게시 때 태그 시점 템플릿 + Release의 dmg sha256으로 채워 tap `4BMtolobPL/homebrew-tap`의 `Casks/khannel.rb`에 직접
+      push(`HOMEBREW_TAP_TOKEN`, 변경 없으면 건너뜀). tap에 미리 넣지 않는 이유: 릴리스 전이면 dmg URL이 404인 Cask가 된다.
+    - 내용: arm64 전용(`depends_on arch: :arm64`, `depends_on :macos` — Homebrew 7 `OSDependsOn` 규칙), livecheck는
+      GitHub 최신 릴리스, `zap`은 앱 데이터 폴더와 Saved Application State, Gatekeeper "Open Anyway" 안내 caveat.
+      격리 속성을 지우는 postflight는 넣지 않았다(Gatekeeper 우회).
+    - 검증: 로컬 임시 tap에서 `brew style` 통과(스탠자 순서는 `--fix` 결과와 동일). `brew audit --strict --online`의 남은
+      지적은 릴리스 전이라 생기는 것뿐(dmg 404, livecheck가 옛 `0.1.0` 릴리스를 봄).
+  - **P6 문서 (2026-10-29)**: README 맨 앞에 **설치** 섹션 — macOS `brew install --cask 4bmtolobpl/tap/khannel` +
+    Gatekeeper "그래도 열기"(시스템 설정 > 개인정보 보호 및 보안) + 삭제/`--zap`, Fedora `dnf copr enable` + 업데이트/삭제,
+    GitHub Releases 직접 내려받기(dmg, Fedora 44 rpm). tap 저장소 README에 cask 설치법과 khannel 항목 추가(tap 쪽 커밋).
+  - **남은 일 (v1.0.0 태그)**: 시크릿 `COPR_CONFIG` 등록 → metainfo `<release>` 날짜 갱신(+ 의존성 바뀌었으면 notices 재생성)
+    → `v1.0.0` 태그 push → Release 초안 확인 후 게시 → publish.yml(COPR, Cask) 결과 확인 → `brew install --cask`/`dnf copr` 설치 확인.
 
 ---
 

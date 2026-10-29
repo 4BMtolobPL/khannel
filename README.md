@@ -2,6 +2,39 @@
 
 [GPUI](https://gpui.rs/)와 Rust로 만든 현대적인 데스크톱 IRC 클라이언트입니다.
 
+## 설치
+
+### macOS (Apple Silicon, macOS 11 이상)
+
+[Homebrew](https://brew.sh/)로 설치합니다.
+
+```bash
+brew install --cask 4bmtolobpl/tap/khannel
+```
+
+khannel은 Apple 공증을 받지 않은 앱(ad-hoc 서명)이라 처음 실행할 때 macOS가 막습니다.
+한 번 실행을 시도한 뒤 **시스템 설정 > 개인정보 보호 및 보안**에서 khannel 항목의 **그래도 열기**를 누르면
+이후로는 바로 열립니다.
+
+삭제는 `brew uninstall --cask khannel`, 저장된 서버 설정까지 지우려면 `brew uninstall --cask --zap khannel`입니다.
+
+### Fedora (44, 45, Rawhide / x86_64)
+
+[COPR](https://copr.fedorainfracloud.org/coprs/is2ogc3tc2/khannel/) 저장소에서 설치합니다.
+
+```bash
+sudo dnf copr enable is2ogc3tc2/khannel
+sudo dnf install khannel
+```
+
+이후 업데이트는 `sudo dnf upgrade`로 받습니다. 삭제는 `sudo dnf remove khannel`입니다.
+
+### 직접 내려받기
+
+[GitHub Releases](https://github.com/4BMtolobPL/khannel/releases)에서 macOS용 `.dmg`와 Fedora 44용 `.rpm`을
+받을 수 있습니다. dmg는 열어서 khannel을 응용 프로그램 폴더로 옮기고(첫 실행은 위의 "그래도 열기" 참고),
+rpm은 `sudo dnf install ./khannel-<버전>-1.fc44.x86_64.rpm`으로 설치합니다.
+
 ## 기술 스택
 
 | 레이어       | 기술                                                        |
@@ -172,7 +205,10 @@ CI(`.github/workflows/main.yml`)는 push/PR마다 Ubuntu와 macOS에서 fmt/clip
 - macOS(Apple Silicon): `khannel-<버전>-macos-arm64.dmg` (ad-hoc 서명)
 - Fedora: `khannel-<버전>-1.fc44.x86_64.rpm`, SRPM
 
-Actions 탭에서 수동 실행하면 릴리스 없이 빌드만 하고 결과물을 아티팩트로 올립니다.
+초안을 게시하면 `.github/workflows/publish.yml`이 SRPM을 COPR(`is2ogc3tc2/khannel`)에 제출하고,
+`dist/homebrew/khannel.rb` 템플릿에 버전과 dmg sha256을 채워 Homebrew tap(`4BMtolobPL/homebrew-tap`)의
+`Casks/khannel.rb`를 갱신합니다(저장소 시크릿 `COPR_CONFIG`, `HOMEBREW_TAP_TOKEN` 필요).
+release 워크플로를 Actions 탭에서 수동 실행하면 릴리스 없이 빌드만 하고 결과물을 아티팩트로 올립니다.
 태그 전에 `dist/linux/com.kimtalmo.khannel.metainfo.xml`의 `<release>` 날짜를 갱신하고,
 의존성이 바뀌었으면 `THIRD_PARTY_NOTICES.md`를 다시 생성합니다(아래 라이선스 참고).
 
@@ -200,6 +236,7 @@ debug 빌드는 같은 디렉토리 아래 `dev/config.json`을 사용합니다.
 - `rpm/khannel.spec`, `rpm/make-srpm.sh` — Fedora RPM. `make-srpm.sh`가 현재 커밋과 Linux 대상으로 거른 vendor
   tarball로 SRPM을 만들고(`cargo-vendor-filterer` 필요), RPM 빌드는 오프라인으로 진행됩니다.
   COPR는 `.copr/Makefile`에서 같은 스크립트를 씁니다.
+- `homebrew/khannel.rb` — Homebrew Cask 템플릿(`@VERSION@`, `@SHA256@`은 릴리스 게시 때 채워짐)
 
 ## 라이선스
 
