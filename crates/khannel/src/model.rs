@@ -135,6 +135,16 @@ fn message_buffer_name(target: &str, sender: &str, own_nickname: Option<&str>) -
     }
 }
 
+/// KICK 표시 문구. 내가 강퇴당했으면 주어를 "You"로.
+fn kick_message(nick: &str, by: &str, reason: Option<&str>, own: bool) -> String {
+    let suffix = reason.map(|r| format!(" ({r})")).unwrap_or_default();
+    if own {
+        format!("You were kicked by {by}{suffix}")
+    } else {
+        format!("{nick} was kicked by {by}{suffix}")
+    }
+}
+
 /// NOTICE 표시 문구. 닉이 보낸 notice는 `-nick- 내용`, 서버 notice는 내용만.
 fn notice_content(nick: Option<&str>, content: &str) -> String {
     match nick {
@@ -472,6 +482,38 @@ impl IrcModel {
                             },
                         );
                     }
+                }
+            }
+            P::Kick {
+                server_id,
+                channel,
+                nick,
+                by,
+                reason,
+            } => {
+                let own_nickname = self.servers.get(&server_id).map(|s| s.nickname.clone());
+                let own_kick = own_nickname.is_some_and(|own| nick_eq(&nick, &own));
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    // 내가 강퇴돼도 Part와 달리 채널 버퍼는 남긴다 — 사유를 볼 수 있어야 한다.
+                    // 더 이상 채널에 없으므로 유저 목록은 비운다
+                    if own_kick {
+                        channel.users.clear();
+                    } else {
+                        channel.users.remove(&nick);
+                    }
+
+                    self.add_message(
+                        server_id,
+                        channel_id,
+                        ChatMessage {
+                            kind: MessageType::System,
+                            id: uuid::Uuid::now_v7().to_string(),
+                            nickname: None,
+                            content: kick_message(&nick, &by, reason.as_deref(), own_kick),
+                            timestamp: now_ms(),
+                        },
+                    );
                 }
             }
             P::Quit {
@@ -1067,6 +1109,18 @@ mod tests {
     fn nick_comparison_is_case_insensitive() {
         assert!(nick_eq("Kim", "kim"));
         assert!(!nick_eq("kim", "kimm"));
+    }
+
+    #[test]
+    fn kick_message_mentions_kicker_and_reason() {
+        assert_eq!(
+            kick_message("lee", "op", Some("spam"), false),
+            "lee was kicked by op (spam)"
+        );
+        assert_eq!(
+            kick_message("kim", "op", None, true),
+            "You were kicked by op"
+        );
     }
 
     #[test]

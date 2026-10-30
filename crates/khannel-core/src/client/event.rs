@@ -201,6 +201,25 @@ impl UIEventBuilder {
         self
     }
 
+    pub fn kick(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        nickname: String,
+        by: String,
+        reason: Option<String>,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::Kick {
+            server_id,
+            channel,
+            nick: nickname,
+            by,
+            reason,
+        });
+
+        self
+    }
+
     pub fn quit(mut self, server_id: ServerId, nickname: String, reason: Option<String>) -> Self {
         self.payload = Some(UIEventPayload::Quit {
             server_id,
@@ -340,6 +359,15 @@ pub enum UIEventPayload {
         server_id: ServerId,
         channel: ChannelId,
         nick: String,
+        reason: Option<String>,
+    },
+    Kick {
+        server_id: ServerId,
+        channel: ChannelId,
+        /// 강퇴당한 닉
+        nick: String,
+        /// 강퇴한 닉
+        by: String,
         reason: Option<String>,
     },
     Quit {

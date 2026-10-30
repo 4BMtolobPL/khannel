@@ -347,6 +347,14 @@ impl ServerActor {
                     .part(self.server_id, chanlist, source_nickname, comment)
                     .emit();
             }
+            Command::KICK(channel, kicked, comment) => {
+                // 발신자가 강퇴한 사람. 내가 강퇴돼도 저장된 채널 목록은 그대로 둔다
+                // → 재접속 시 자동으로 다시 입장한다 (irssi/weechat 기본 동작과 같음)
+                let comment = comment.filter(|comment| !comment.is_empty());
+                emit_ui_event(&self.ui_sink)
+                    .kick(self.server_id, channel, kicked, source_nickname, comment)
+                    .emit();
+            }
             Command::QUIT(comment) => {
                 emit_ui_event(&self.ui_sink)
                     .quit(self.server_id, source_nickname, comment)
@@ -1420,6 +1428,52 @@ mod quit_tests {
                 ("bob".into(), "hello".into(), false),
             ]
         );
+    }
+
+    // ==================== KICK ====================
+
+    /// KICK은 강퇴당한 닉/강퇴한 닉/사유로 보내고, 내가 강퇴돼도 저장된 채널은 유지한다
+    /// (재접속 시 자동 재입장).
+    #[tokio::test]
+    async fn kick_is_forwarded_and_keeps_saved_channel() {
+        let port = spawn_join_reply_mock(concat!(
+            ":op!u@mock KICK #a lee :spam\r\n",
+            ":op!u@mock KICK #a nick\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut kicks = Vec::new();
+        timeout(Duration::from_secs(5), async {
+            while kicks.len() < 2 {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Kick {
+                        channel,
+                        nick,
+                        by,
+                        reason,
+                        ..
+                    })) => kicks.push((channel, nick, by, reason)),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no kick events");
+
+        assert_eq!(
+            kicks,
+            [
+                ("#a".into(), "lee".into(), "op".into(), Some("spam".into())),
+                ("#a".into(), "nick".into(), "op".into(), None),
+            ]
+        );
+        assert!(h.server().contains_channel("#a"));
     }
 
     // ==================== 서버 삭제 ====================
