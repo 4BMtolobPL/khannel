@@ -504,6 +504,28 @@ impl ServerActor {
                 // 그래도 안될경우 오류 던지기
                 trace!("닉네임 중복");
             }
+            Command::Response(Response::RPL_MOTDSTART, args) => {
+                // 이전 MOTD가 끝나지 않았어도 새로 시작한다
+                ctx.motd = Some(args.last().into_iter().cloned().collect());
+            }
+            Command::Response(Response::RPL_MOTD, args) => {
+                // 줄마다 붙는 "- " 접두사는 뗀다. 375 없이 와도 모은다
+                if let Some(line) = args.last() {
+                    let line = line.strip_prefix("- ").unwrap_or(line);
+                    ctx.motd.get_or_insert_with(Vec::new).push(line.to_string());
+                }
+            }
+            Command::Response(Response::RPL_ENDOFMOTD, _) => {
+                // 수십 줄짜리 MOTD가 서버 버퍼를 덮지 않도록 메시지 하나로 보낸다
+                if let Some(lines) = ctx.motd.take().filter(|lines| !lines.is_empty()) {
+                    emit_system_message(&self.ui_sink, self.server_id, &lines.join("\n"));
+                }
+            }
+            Command::Response(response, args) if is_info_numeric(response) => {
+                if let Some(text) = info_text(response, &args) {
+                    emit_system_message(&self.ui_sink, self.server_id, &text);
+                }
+            }
             Command::Response(response, args) if is_join_error(response) => {
                 self.handle_join_error(ctx, &args);
             }
@@ -593,6 +615,38 @@ struct SessionCtx {
     pending_names: HashMap<String, Vec<String>>,
     /// 사용자가 요청했고 아직 JOIN 응답이 오지 않은 채널 (소문자). 자동 재입장은 포함하지 않는다
     pending_joins: HashSet<String>,
+    /// 376(RPL_ENDOFMOTD)까지 모으는 MOTD 줄 (375 머리줄 포함)
+    motd: Option<Vec<String>>,
+}
+
+/// 서버 버퍼에 그대로 보여줄 접속 정보 numeric (MOTD는 따로 모은다)
+fn is_info_numeric(response: Response) -> bool {
+    matches!(
+        response,
+        Response::RPL_YOURHOST
+            | Response::RPL_CREATED
+            | Response::RPL_LUSERCLIENT
+            | Response::RPL_LUSEROP
+            | Response::RPL_LUSERUNKNOWN
+            | Response::RPL_LUSERCHANNELS
+            | Response::RPL_LUSERME
+            | Response::RPL_LOCALUSERS
+            | Response::RPL_GLOBALUSERS
+            | Response::ERR_NOMOTD
+    )
+}
+
+/// 접속 정보 numeric의 표시 문구. 첫 인자(내 닉)는 뺀다.
+fn info_text(response: Response, args: &[String]) -> Option<String> {
+    match response {
+        // args: [내 닉, 개수, "operator(s) online"] → 개수와 설명을 합친다
+        Response::RPL_LUSEROP | Response::RPL_LUSERUNKNOWN | Response::RPL_LUSERCHANNELS => {
+            Some(args.get(1..)?.join(" ")).filter(|text| !text.is_empty())
+        }
+        // 그 외는 마지막 인자가 사람이 읽는 문장이다
+        // (265/266은 앞에 숫자 인자가 더 붙지만 문장에 이미 들어 있다)
+        _ => args.get(1..)?.last().cloned(),
+    }
 }
 
 /// 채널 입장 실패 numeric
@@ -724,6 +778,41 @@ mod tests {
     fn test_get_ctcp_reply_unknown() {
         let reply = get_ctcp_reply(&CtcpCommand::Unknown("FOO".to_string()));
         assert_eq!(reply, None);
+    }
+
+    fn args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn test_info_text() {
+        assert_eq!(
+            info_text(
+                Response::RPL_LUSERCLIENT,
+                &args(&["nick", "There are 5 users"])
+            )
+            .as_deref(),
+            Some("There are 5 users")
+        );
+        assert_eq!(
+            info_text(
+                Response::RPL_LUSEROP,
+                &args(&["nick", "3", "operator(s) online"])
+            )
+            .as_deref(),
+            Some("3 operator(s) online")
+        );
+        assert_eq!(
+            info_text(
+                Response::RPL_LOCALUSERS,
+                &args(&["nick", "10", "20", "Current local users 10, max 20"])
+            )
+            .as_deref(),
+            Some("Current local users 10, max 20")
+        );
+        // 내 닉만 있고 내용이 없으면 표시하지 않는다
+        assert_eq!(info_text(Response::RPL_LUSEROP, &args(&["nick"])), None);
+        assert_eq!(info_text(Response::RPL_CREATED, &args(&["nick"])), None);
     }
 
     #[test]
@@ -1673,6 +1762,39 @@ mod quit_tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    // ==================== 접속 정보 / MOTD ====================
+
+    /// 접속 정보 numeric은 서버 버퍼 메시지로, MOTD는 376까지 모아 메시지 하나로 보낸다.
+    #[tokio::test]
+    async fn info_numerics_and_collected_motd_go_to_server_buffer() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 002 nick :Your host is mock\r\n",
+            ":mock 252 nick 3 :operator(s) online\r\n",
+            ":mock 375 nick :- mock Message of the Day -\r\n",
+            ":mock 372 nick :- line one\r\n",
+            ":mock 372 nick :- line two\r\n",
+            ":mock 376 nick :End of /MOTD command.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        // 001 직후의 "서버에 연결되었습니다." 안내는 건너뛴다
+        assert_eq!(
+            next_system_message(&mut h.rx).await,
+            "서버에 연결되었습니다."
+        );
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        assert_eq!(next_system_message(&mut h.rx).await, "Your host is mock");
+        assert_eq!(next_system_message(&mut h.rx).await, "3 operator(s) online");
+        assert_eq!(
+            next_system_message(&mut h.rx).await,
+            "- mock Message of the Day -\nline one\nline two"
+        );
     }
 
     // ==================== 서버 삭제 ====================
