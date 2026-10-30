@@ -129,6 +129,27 @@ impl UIEventBuilder {
             channel,
             nick: nickname,
             content,
+            action: false,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        });
+
+        self
+    }
+
+    /// `/me` 액션 메시지 (CTCP ACTION). `content`는 `\x01ACTION`을 벗긴 본문
+    pub fn action_message(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        nickname: String,
+        content: String,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::UserMessage {
+            server_id,
+            channel,
+            nick: nickname,
+            content,
+            action: true,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         });
 
@@ -297,6 +318,8 @@ pub enum UIEventPayload {
         channel: ChannelId,
         nick: String,
         content: String,
+        /// `/me` 액션(CTCP ACTION)이면 true — UI는 `* nick 내용`으로 표시한다
+        action: bool,
         timestamp: u64,
     },
     /// NOTICE. `target`은 받은 그대로(채널/내 닉/`*` 등) — 어느 버퍼에 쌓을지는 UI가 정한다

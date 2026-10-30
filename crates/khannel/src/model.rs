@@ -24,7 +24,16 @@ pub type MessageId = String;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MessageType {
     User,
+    /// `/me` 액션 (`* nick 내용`)
+    Action,
     System,
+}
+
+impl MessageType {
+    /// 사람이 보낸 대화 메시지인지 (unread/divider 집계 대상)
+    pub fn is_user_message(self) -> bool {
+        matches!(self, Self::User | Self::Action)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -353,6 +362,7 @@ impl IrcModel {
                 channel,
                 nick,
                 content,
+                action,
                 timestamp,
             } => {
                 let own_nickname = self.servers.get(&server_id).map(|s| s.nickname.as_str());
@@ -363,7 +373,11 @@ impl IrcModel {
                     server_id,
                     channel_id,
                     ChatMessage {
-                        kind: MessageType::User,
+                        kind: if action {
+                            MessageType::Action
+                        } else {
+                            MessageType::User
+                        },
                         id: uuid::Uuid::now_v7().to_string(),
                         nickname: Some(nick),
                         content,
@@ -676,7 +690,7 @@ impl IrcModel {
 
         // 현재 채널이 아니면 unread 증가
         if !is_current
-            && message.kind == MessageType::User
+            && message.kind.is_user_message()
             && let Some(channel) = self.channels.get_mut(&channel_id)
         {
             channel.unread = channel_unread + 1;

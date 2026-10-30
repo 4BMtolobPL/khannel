@@ -303,16 +303,23 @@ impl ServerActor {
         let source_nickname = message.source_nickname().unwrap_or("").to_string();
 
         match message.command {
-            Command::PRIVMSG(target, content) => {
-                if let Some(ctcp) = parse_ctcp(&content) {
+            Command::PRIVMSG(target, content) => match parse_ctcp(&content) {
+                Some(CtcpCommand::Action(action)) => {
+                    // `/me` — CTCP지만 응답하지 않고 대화 메시지로 표시한다
+                    emit_ui_event(&self.ui_sink)
+                        .action_message(self.server_id, target, source_nickname, action)
+                        .emit();
+                }
+                Some(ctcp) => {
                     info!(target = %target, content = %content, "Received CTCP message");
                     handle_ctcp(client, &source_nickname, ctcp);
-                } else {
+                }
+                None => {
                     emit_ui_event(&self.ui_sink)
                         .user_message(self.server_id, target, source_nickname, content)
                         .emit();
                 }
-            }
+            },
             Command::NOTICE(target, content) => {
                 // 서버 발신(접두사가 서버명이거나 없음)이면 닉이 없다
                 let nick = Some(source_nickname).filter(|nick| !nick.is_empty());
@@ -582,7 +589,8 @@ fn get_ctcp_reply(ctcp: &CtcpCommand) -> Option<String> {
             let now = chrono::Local::now().to_rfc2822();
             Some(format!("\x01TIME {}\x01", now))
         }
-        CtcpCommand::Unknown(_) => None,
+        // ACTION은 handle_message에서 메시지로 처리한다
+        CtcpCommand::Action(_) | CtcpCommand::Unknown(_) => None,
     }
 }
 
@@ -1369,6 +1377,49 @@ mod quit_tests {
             ]
         );
         assert_eq!(ctcp, "CTCP reply from bob: VERSION bobirc 1.0");
+    }
+
+    // ==================== CTCP ACTION ====================
+
+    /// `/me`(CTCP ACTION)는 응답하지 않고 action 메시지로 보낸다. 일반 메시지는 action=false.
+    #[tokio::test]
+    async fn ctcp_action_is_forwarded_as_action_message() {
+        let port = spawn_join_reply_mock(concat!(
+            ":bob!u@mock PRIVMSG #a :\x01ACTION waves\x01\r\n",
+            ":bob!u@mock PRIVMSG #a :hello\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut messages = Vec::new();
+        timeout(Duration::from_secs(5), async {
+            while messages.len() < 2 {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::UserMessage {
+                        nick,
+                        content,
+                        action,
+                        ..
+                    })) => messages.push((nick, content, action)),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no user messages");
+
+        assert_eq!(
+            messages,
+            [
+                ("bob".into(), "waves".into(), true),
+                ("bob".into(), "hello".into(), false),
+            ]
+        );
     }
 
     // ==================== 서버 삭제 ====================

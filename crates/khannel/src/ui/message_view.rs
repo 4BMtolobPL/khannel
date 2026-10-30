@@ -63,7 +63,7 @@ fn unread_from(
                 (own_nickname, message.nickname.as_deref()),
                 (Some(own), Some(nick)) if crate::model::nick_eq(own, nick)
             );
-            message.kind == MessageType::User && !is_own
+            message.kind.is_user_message() && !is_own
         })
         .then_some(start)
 }
@@ -280,6 +280,30 @@ impl MessageView {
                             .child(message.content.clone()),
                     )
             }
+            MessageType::Action => {
+                // `* nick 내용` — 닉과 본문을 한 문장처럼 이탤릭으로
+                let nick = message.nickname.clone().unwrap_or_default();
+                div()
+                    .mb_1()
+                    .flex()
+                    .min_w_0()
+                    .italic()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
+                            .text_color(theme.accent_text)
+                            .child(format!("* {nick}")),
+                    )
+                    .child(
+                        div()
+                            .ml_1()
+                            .flex_1()
+                            .min_w_0()
+                            .child(message.content.clone()),
+                    )
+            }
             MessageType::System => div()
                 .mb_1()
                 .flex()
@@ -418,6 +442,15 @@ mod tests {
         // 다른 사람 메시지가 섞이면 새 구간 시작 위치
         let list = vec![message("a", MessageType::User), own, other];
         assert_eq!(unread_from(&list, 1, Some("kim")), Some(1));
+    }
+
+    #[test]
+    fn action_messages_count_as_unread() {
+        let list = vec![
+            message("a", MessageType::User),
+            message("b", MessageType::Action),
+        ];
+        assert_eq!(unread_from(&list, 1, None), Some(1));
     }
 
     #[test]

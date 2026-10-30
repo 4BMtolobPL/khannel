@@ -1,5 +1,7 @@
 #[derive(Debug, PartialEq)]
 pub enum CtcpCommand {
+    /// `/me` 액션. 응답 대상이 아니라 메시지로 표시한다
+    Action(String),
     Version,
     Ping(String),
     Time,
@@ -23,6 +25,7 @@ pub fn parse_ctcp(message: &str) -> Option<CtcpCommand> {
     let arg = parts.next().unwrap_or("").to_string();
 
     match cmd.as_str() {
+        "ACTION" => Some(CtcpCommand::Action(arg)),
         "VERSION" => Some(CtcpCommand::Version),
         "PING" => Some(CtcpCommand::Ping(arg)),
         "TIME" => Some(CtcpCommand::Time),
@@ -71,6 +74,18 @@ mod tests {
         assert_eq!(
             parse_ctcp("\x01 \x01"),
             Some(CtcpCommand::Unknown(" ".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_ctcp_action() {
+        assert_eq!(
+            parse_ctcp("\x01ACTION waves hello\x01"),
+            Some(CtcpCommand::Action("waves hello".to_string()))
+        );
+        assert_eq!(
+            parse_ctcp("\x01ACTION\x01"),
+            Some(CtcpCommand::Action("".to_string()))
         );
     }
 
