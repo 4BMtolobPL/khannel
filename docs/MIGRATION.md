@@ -726,8 +726,24 @@ Tauri 버전과 나란히 실행해 다음을 검증:
   - **P6 문서 (2026-10-29)**: README 맨 앞에 **설치** 섹션 — macOS `brew install --cask 4bmtolobpl/tap/khannel` +
     Gatekeeper "그래도 열기"(시스템 설정 > 개인정보 보호 및 보안) + 삭제/`--zap`, Fedora `dnf copr enable` + 업데이트/삭제,
     GitHub Releases 직접 내려받기(dmg, Fedora 44 rpm). tap 저장소 README에 cask 설치법과 khannel 항목 추가(tap 쪽 커밋).
-  - **남은 일 (v1.0.0 태그)**: 시크릿 `COPR_CONFIG` 등록 → metainfo `<release>` 날짜 갱신(+ 의존성 바뀌었으면 notices 재생성)
-    → `v1.0.0` 태그 push → Release 초안 확인 후 게시 → publish.yml(COPR, Cask) 결과 확인 → `brew install --cask`/`dnf copr` 설치 확인.
+  - **v1.0.0 배포 완료 (2026-10-29)**: `COPR_CONFIG` 등록, metainfo `<release date="2026-10-29">`, master(#69)에서 `v1.0.0` 태그
+    → Release 초안(dmg, x86_64 rpm, SRPM) 게시 → publish.yml의 COPR(fedora-44/45/rawhide x86_64)·Cask 모두 성공.
+    사용자가 macOS(`brew install --cask 4bmtolobpl/tap/khannel`)와 Fedora(`dnf copr enable`)에서 설치·실행 확인.
+    **GPUI 마이그레이션과 1.0 패키징은 여기서 끝났다** — 이 문서는 이력으로 남기고, 이후 개발·릴리스 절차는
+    [DEVELOPMENT.md](DEVELOPMENT.md), [RELEASING.md](RELEASING.md)에서 관리한다.
+  - **1.0 이후 정리 (2026-10-29)**:
+    - README를 사용자용(설치, 기능, 데이터 위치, 라이선스)으로 줄이고 개발 내용(기술 스택, 아키텍처, 구조, 개발 환경,
+      `dist/`, 고지 재생성)은 `docs/DEVELOPMENT.md`, 릴리스 내용은 `docs/RELEASING.md`로 옮겼다(사용자 요청).
+    - `dist/bump-version.sh`: Cargo.toml/lock, spec Version·Release·%changelog, metainfo `<release>`, THIRD_PARTY_NOTICES를
+      한 번에 갱신(GNU/BSD 도구 모두 지원, 커밋·태그는 안 함).
+    - RELEASING.md에 COPR/Homebrew 토큰 만료·갱신 절차와 gpui 업데이트 절차(별도 PR, Rust 최소 버전과 Fedora rust 확인,
+      수동 release 실행으로 패키징 검증)를 기록.
+    - **Fedora aarch64 지원**: COPR에 `fedora-44/45/rawhide-aarch64` chroot 추가, release.yml의 fedora job을 x86_64
+      (`ubuntu-24.04`)·aarch64(`ubuntu-24.04-arm`) matrix로(SRPM은 x86_64에서만 업로드). spec(`ExclusiveArch`)과
+      vendor 필터는 처음부터 aarch64를 포함했다.
+      COPR aarch64 chroot는 저장소가 반나절 넘게 준비되지 않아 첫 빌드(11223036)가 `copr_base` 대기로 실패했고,
+      준비된 뒤 다시 제출한 v1.0.0 빌드(11223386)가 fedora-44/45/rawhide aarch64 모두 성공(테스트 59개 통과).
+      COPR 설치 안내를 "x86_64 and aarch64"로 갱신.
 
 ---
 
