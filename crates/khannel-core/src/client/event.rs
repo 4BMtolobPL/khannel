@@ -135,6 +135,24 @@ impl UIEventBuilder {
         self
     }
 
+    pub fn notice(
+        mut self,
+        server_id: ServerId,
+        target: String,
+        nickname: Option<String>,
+        content: String,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::Notice {
+            server_id,
+            target,
+            nick: nickname,
+            content,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        });
+
+        self
+    }
+
     pub fn join(mut self, server_id: ServerId, channel: String, nickname: String) -> Self {
         self.payload = Some(UIEventPayload::Join {
             server_id,
@@ -278,6 +296,15 @@ pub enum UIEventPayload {
         server_id: ServerId,
         channel: ChannelId,
         nick: String,
+        content: String,
+        timestamp: u64,
+    },
+    /// NOTICE. `target`은 받은 그대로(채널/내 닉/`*` 등) — 어느 버퍼에 쌓을지는 UI가 정한다
+    Notice {
+        server_id: ServerId,
+        target: String,
+        /// 보낸 닉. 서버가 보낸 notice면 None
+        nick: Option<String>,
         content: String,
         timestamp: u64,
     },

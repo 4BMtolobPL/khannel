@@ -1,4 +1,4 @@
-use crate::client::ctcp::{CtcpCommand, parse_ctcp};
+use crate::client::ctcp::{CtcpCommand, ctcp_body, parse_ctcp};
 use crate::client::event::EventSender;
 use crate::client::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
@@ -310,6 +310,23 @@ impl ServerActor {
                 } else {
                     emit_ui_event(&self.ui_sink)
                         .user_message(self.server_id, target, source_nickname, content)
+                        .emit();
+                }
+            }
+            Command::NOTICE(target, content) => {
+                // 서버 발신(접두사가 서버명이거나 없음)이면 닉이 없다
+                let nick = Some(source_nickname).filter(|nick| !nick.is_empty());
+                if let Some(body) = ctcp_body(&content) {
+                    // NOTICE의 CTCP는 내가 보낸 CTCP 요청의 응답 — 표시만 하고 절대 응답하지 않는다
+                    info!(target = %target, content = %content, "Received CTCP reply");
+                    emit_system_message(
+                        &self.ui_sink,
+                        self.server_id,
+                        &format!("CTCP reply from {}: {body}", nick.as_deref().unwrap_or("*")),
+                    );
+                } else {
+                    emit_ui_event(&self.ui_sink)
+                        .notice(self.server_id, target, nick, content)
                         .emit();
                 }
             }
@@ -1297,6 +1314,61 @@ mod quit_tests {
             next_topic_event(&mut h.rx).await,
             ("#a".into(), None, Some("op".into()))
         );
+    }
+
+    // ==================== NOTICE ====================
+
+    /// NOTICE는 대상/보낸 닉(서버면 None)과 함께 보내고, NOTICE 안의 CTCP 응답은
+    /// 서버 버퍼 시스템 메시지로만 표시한다.
+    #[tokio::test]
+    async fn notices_are_forwarded_and_ctcp_replies_shown() {
+        let port = spawn_join_reply_mock(concat!(
+            ":irc.mock.net NOTICE * :*** server notice\r\n",
+            ":NickServ!s@services NOTICE nick :please identify\r\n",
+            ":op!u@mock NOTICE #a :channel notice\r\n",
+            ":bob!u@mock NOTICE nick :\x01VERSION bobirc 1.0\x01\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut notices = Vec::new();
+        let ctcp = timeout(Duration::from_secs(5), async {
+            loop {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Notice {
+                        target,
+                        nick,
+                        content,
+                        ..
+                    })) => notices.push((target, nick, content)),
+                    Some(UiEvent::SystemMessage(p)) if p.message.starts_with("CTCP") => {
+                        return p.message;
+                    }
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no ctcp reply message");
+
+        assert_eq!(
+            notices,
+            [
+                ("*".into(), None, "*** server notice".into()),
+                (
+                    "nick".into(),
+                    Some("NickServ".into()),
+                    "please identify".into()
+                ),
+                ("#a".into(), Some("op".into()), "channel notice".into()),
+            ]
+        );
+        assert_eq!(ctcp, "CTCP reply from bob: VERSION bobirc 1.0");
     }
 
     // ==================== 서버 삭제 ====================

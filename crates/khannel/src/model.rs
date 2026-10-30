@@ -126,6 +126,14 @@ fn message_buffer_name(target: &str, sender: &str, own_nickname: Option<&str>) -
     }
 }
 
+/// NOTICE 표시 문구. 닉이 보낸 notice는 `-nick- 내용`, 서버 notice는 내용만.
+fn notice_content(nick: Option<&str>, content: &str) -> String {
+    match nick {
+        Some(nick) => format!("-{nick}- {content}"),
+        None => content.to_string(),
+    }
+}
+
 /// 토픽 이벤트를 채널에 남길 시스템 메시지.
 /// 누가 바꾼 경우와 입장 시 받은 현재 토픽을 구분하고, 토픽이 없는 채널에 입장하면 남기지 않는다.
 fn topic_message(topic: Option<&str>, changed_by: Option<&str>) -> Option<String> {
@@ -362,6 +370,29 @@ impl IrcModel {
                         timestamp,
                     },
                 );
+            }
+            P::Notice {
+                server_id,
+                target,
+                nick,
+                content,
+                timestamp,
+            } => {
+                let message = ChatMessage {
+                    kind: MessageType::System,
+                    id: uuid::Uuid::now_v7().to_string(),
+                    nickname: None,
+                    content: notice_content(nick.as_deref(), &content),
+                    timestamp,
+                };
+                // 입장한 채널로 온 notice만 채널 버퍼에. 나머지(NickServ, 서버 공지 등)는
+                // DM 버퍼를 만들지 않고 서버 버퍼에 쌓는다
+                let channel_id = self.get_channel_id(&server_id, &target);
+                if is_channel_name(&target) && self.channels.contains_key(&channel_id) {
+                    self.add_message(server_id, channel_id, message);
+                } else {
+                    self.add_server_message(server_id, message);
+                }
             }
             P::Join {
                 server_id,
@@ -1022,6 +1053,12 @@ mod tests {
     fn nick_comparison_is_case_insensitive() {
         assert!(nick_eq("Kim", "kim"));
         assert!(!nick_eq("kim", "kimm"));
+    }
+
+    #[test]
+    fn notice_content_shows_sender_nick() {
+        assert_eq!(notice_content(Some("NickServ"), "hi"), "-NickServ- hi");
+        assert_eq!(notice_content(None, "*** Looking up"), "*** Looking up");
     }
 
     #[test]
