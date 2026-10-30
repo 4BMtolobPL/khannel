@@ -126,6 +126,17 @@ fn message_buffer_name(target: &str, sender: &str, own_nickname: Option<&str>) -
     }
 }
 
+/// 토픽 이벤트를 채널에 남길 시스템 메시지.
+/// 누가 바꾼 경우와 입장 시 받은 현재 토픽을 구분하고, 토픽이 없는 채널에 입장하면 남기지 않는다.
+fn topic_message(topic: Option<&str>, changed_by: Option<&str>) -> Option<String> {
+    match (changed_by, topic) {
+        (Some(nick), Some(topic)) => Some(format!("{nick} changed the topic to: {topic}")),
+        (Some(nick), None) => Some(format!("{nick} cleared the topic")),
+        (None, Some(topic)) => Some(format!("Topic: {topic}")),
+        (None, None) => None,
+    }
+}
+
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
 }
@@ -503,13 +514,15 @@ impl IrcModel {
                 server_id,
                 channel,
                 topic,
+                changed_by,
             } => {
                 self.ensure_channel(server_id, &channel);
-                if let Some(server) = self.servers.get(&server_id).cloned() {
-                    let channel_id = self.get_channel_id(&server_id, &channel);
-                    if let Some(channel) = self.channels.get_mut(&channel_id) {
-                        channel.topic = topic.clone();
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    let content = topic_message(topic.as_deref(), changed_by.as_deref());
+                    channel.topic = topic;
 
+                    if let Some(content) = content {
                         self.add_message(
                             server_id,
                             channel_id,
@@ -517,12 +530,11 @@ impl IrcModel {
                                 kind: MessageType::System,
                                 id: uuid::Uuid::now_v7().to_string(),
                                 nickname: None,
-                                content: format!("Topic set to: {}", topic.unwrap_or_default()),
+                                content,
                                 timestamp: now_ms(),
                             },
                         );
                     }
-                    let _ = server;
                 }
             }
             P::Names {
@@ -1010,6 +1022,23 @@ mod tests {
     fn nick_comparison_is_case_insensitive() {
         assert!(nick_eq("Kim", "kim"));
         assert!(!nick_eq("kim", "kimm"));
+    }
+
+    #[test]
+    fn topic_message_distinguishes_change_from_current_topic() {
+        assert_eq!(
+            topic_message(Some("hi"), Some("kim")).as_deref(),
+            Some("kim changed the topic to: hi")
+        );
+        assert_eq!(
+            topic_message(None, Some("kim")).as_deref(),
+            Some("kim cleared the topic")
+        );
+        assert_eq!(
+            topic_message(Some("hi"), None).as_deref(),
+            Some("Topic: hi")
+        );
+        assert_eq!(topic_message(None, None), None);
     }
 
     #[test]

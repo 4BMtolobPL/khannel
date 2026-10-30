@@ -359,9 +359,32 @@ impl ServerActor {
                     .emit();
             }
             Command::TOPIC(channel, topic) => {
+                // 누군가 토픽을 바꾼 경우. 빈 토픽은 토픽 삭제
+                let topic = topic.filter(|topic| !topic.is_empty());
                 emit_ui_event(&self.ui_sink)
-                    .topic(self.server_id, channel, topic)
+                    .topic(self.server_id, channel, topic, Some(source_nickname))
                     .emit();
+            }
+            Command::Response(Response::RPL_TOPIC, args) => {
+                // 입장 시(또는 TOPIC 조회 시) 현재 토픽. args: [내 닉, 채널, 토픽]
+                if let [_, channel, topic, ..] = args.as_slice() {
+                    let topic = Some(topic.clone()).filter(|topic| !topic.is_empty());
+                    emit_ui_event(&self.ui_sink)
+                        .topic(self.server_id, channel.clone(), topic, None)
+                        .emit();
+                }
+            }
+            Command::Response(Response::RPL_NOTOPIC, args) => {
+                // args: [내 닉, 채널, "No topic is set"]
+                if let Some(channel) = args.get(1) {
+                    emit_ui_event(&self.ui_sink)
+                        .topic(self.server_id, channel.clone(), None, None)
+                        .emit();
+                }
+            }
+            Command::Response(Response::RPL_TOPICWHOTIME, args) => {
+                // args: [내 닉, 채널, 설정자, 설정 시각(unix)] — 아직 UI에 표시하지 않는다
+                trace!(args = ?args, "Topic set by");
             }
             Command::ERROR(message) => {
                 warn!(message = %message, "Server command error");
@@ -1218,6 +1241,62 @@ mod quit_tests {
 
         assert_eq!(channel, "#Test");
         assert_eq!(users, ["nick", "op", "voice", "owner", "both"]);
+    }
+
+    // ==================== TOPIC ====================
+
+    /// 다음 Topic UI 이벤트를 기다린다 (channel, topic, changed_by)
+    async fn next_topic_event(
+        rx: &mut UnboundedReceiver<UiEvent>,
+    ) -> (String, Option<String>, Option<String>) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Topic {
+                        channel,
+                        topic,
+                        changed_by,
+                        ..
+                    })) => return (channel, topic, changed_by),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no topic event")
+    }
+
+    /// 입장 시 받은 현재 토픽(332/331)은 변경자 없이, TOPIC 커맨드는 변경자와 함께 보낸다.
+    #[tokio::test]
+    async fn topic_numerics_and_topic_change_are_distinguished() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 332 nick #a :hello world\r\n",
+            ":mock 333 nick #a op 1700000000\r\n",
+            ":mock 331 nick #b :No topic is set\r\n",
+            ":op!u@mock TOPIC #a :new topic\r\n",
+            ":op!u@mock TOPIC #a :\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        assert_eq!(
+            next_topic_event(&mut h.rx).await,
+            ("#a".into(), Some("hello world".into()), None)
+        );
+        assert_eq!(next_topic_event(&mut h.rx).await, ("#b".into(), None, None));
+        assert_eq!(
+            next_topic_event(&mut h.rx).await,
+            ("#a".into(), Some("new topic".into()), Some("op".into()))
+        );
+        assert_eq!(
+            next_topic_event(&mut h.rx).await,
+            ("#a".into(), None, Some("op".into()))
+        );
     }
 
     // ==================== 서버 삭제 ====================

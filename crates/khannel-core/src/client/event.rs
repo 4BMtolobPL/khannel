@@ -182,11 +182,18 @@ impl UIEventBuilder {
         self
     }
 
-    pub fn topic(mut self, server_id: ServerId, channel: String, topic: Option<String>) -> Self {
+    pub fn topic(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        topic: Option<String>,
+        changed_by: Option<String>,
+    ) -> Self {
         self.payload = Some(UIEventPayload::Topic {
             server_id,
             channel,
             topic,
+            changed_by,
         });
 
         self
@@ -299,6 +306,8 @@ pub enum UIEventPayload {
         server_id: ServerId,
         channel: ChannelId,
         topic: Option<String>,
+        /// 토픽을 바꾼 닉 (TOPIC 커맨드). None이면 입장/조회 시 받은 현재 토픽(332/331)
+        changed_by: Option<String>,
     },
     /// 채널 유저 목록 전체 (NAMES 응답). 권한 접두사는 제거된 닉 목록 — UI는 목록을 교체한다
     Names {
