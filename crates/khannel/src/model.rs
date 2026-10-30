@@ -143,6 +143,11 @@ fn error_content(target: Option<&str>, message: &str) -> String {
     }
 }
 
+/// 채널 MODE 표시 문구. 서버가 건 모드면 주어를 "Server"로.
+fn mode_message(by: Option<&str>, modes: &str) -> String {
+    format!("{} sets mode {modes}", by.unwrap_or("Server"))
+}
+
 /// KICK 표시 문구. 내가 강퇴당했으면 주어를 "You"로.
 fn kick_message(nick: &str, by: &str, reason: Option<&str>, own: bool) -> String {
     let suffix = reason.map(|r| format!(" ({r})")).unwrap_or_default();
@@ -490,6 +495,28 @@ impl IrcModel {
                             },
                         );
                     }
+                }
+            }
+            P::ChannelMode {
+                server_id,
+                channel,
+                by,
+                modes,
+            } => {
+                // 입장한 채널에만 남긴다 (모드 변경으로 채널을 만들지 않음)
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if self.channels.contains_key(&channel_id) {
+                    self.add_message(
+                        server_id,
+                        channel_id,
+                        ChatMessage {
+                            kind: MessageType::System,
+                            id: uuid::Uuid::now_v7().to_string(),
+                            nickname: None,
+                            content: mode_message(by.as_deref(), &modes),
+                            timestamp: now_ms(),
+                        },
+                    );
                 }
             }
             P::Kick {
@@ -1165,6 +1192,12 @@ mod tests {
             error_content(None, "Cannot send to channel"),
             "Error: Cannot send to channel"
         );
+    }
+
+    #[test]
+    fn mode_message_names_setter() {
+        assert_eq!(mode_message(Some("op"), "+o lee"), "op sets mode +o lee");
+        assert_eq!(mode_message(None, "+nt"), "Server sets mode +nt");
     }
 
     #[test]

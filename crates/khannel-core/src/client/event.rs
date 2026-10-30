@@ -201,6 +201,23 @@ impl UIEventBuilder {
         self
     }
 
+    pub fn channel_mode(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        by: Option<String>,
+        modes: String,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::ChannelMode {
+            server_id,
+            channel,
+            by,
+            modes,
+        });
+
+        self
+    }
+
     pub fn kick(
         mut self,
         server_id: ServerId,
@@ -374,6 +391,14 @@ pub enum UIEventPayload {
         channel: ChannelId,
         nick: String,
         reason: Option<String>,
+    },
+    /// 채널 모드 변경. `modes`는 `+o-v nick1 nick2` 형태
+    ChannelMode {
+        server_id: ServerId,
+        channel: ChannelId,
+        /// 모드를 바꾼 닉. 서버가 건 모드면 None
+        by: Option<String>,
+        modes: String,
     },
     Kick {
         server_id: ServerId,

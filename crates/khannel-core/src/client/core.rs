@@ -10,6 +10,7 @@ use futures::prelude::*;
 use irc::client::ClientStream;
 use irc::client::prelude::*;
 use irc::error;
+use irc::proto::mode::ModeType;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -356,6 +357,52 @@ impl ServerActor {
                     .part(self.server_id, chanlist, source_nickname, comment)
                     .emit();
             }
+            Command::ChannelMODE(channel, modes) => {
+                // 서버가 건 모드(입장 직후 +nt 등)는 발신자 닉이 없다
+                if !modes.is_empty() {
+                    let by = Some(source_nickname).filter(|nick| !nick.is_empty());
+                    emit_ui_event(&self.ui_sink)
+                        .channel_mode(self.server_id, channel, by, format_modes(&modes))
+                        .emit();
+                }
+            }
+            Command::UserMODE(target, modes) => {
+                // 내 유저 모드 (접속 직후 +i 등) — 서버 버퍼에 알린다
+                if !modes.is_empty() {
+                    emit_system_message(
+                        &self.ui_sink,
+                        self.server_id,
+                        &format!("Mode {target} {}", format_modes(&modes)),
+                    );
+                }
+            }
+            Command::INVITE(invited, channel) => {
+                let by = Some(source_nickname)
+                    .filter(|nick| !nick.is_empty())
+                    .unwrap_or_else(|| "Server".to_string());
+                // invite-notify가 켜진 서버에선 다른 사람이 초대된 것도 알려준다
+                let message = if self
+                    .server
+                    .current_nickname()
+                    .eq_ignore_ascii_case(&invited)
+                {
+                    format!("{by} invited you to {channel}")
+                } else {
+                    format!("{by} invited {invited} to {channel}")
+                };
+                emit_system_message(&self.ui_sink, self.server_id, &message);
+            }
+            Command::Response(Response::RPL_ISUPPORT, args) => {
+                // args: [내 닉, "TOKEN=값", ..., "are supported by this server"] — 여러 줄로 온다
+                if let Some(symbols) = args
+                    .iter()
+                    .skip(1)
+                    .find_map(|token| parse_isupport_prefix(token))
+                {
+                    debug!(event = "isupport_prefix", symbols = %symbols);
+                    ctx.prefix_symbols = Some(symbols);
+                }
+            }
             Command::KICK(channel, kicked, comment) => {
                 // 발신자가 강퇴한 사람. 내가 강퇴돼도 저장된 채널 목록은 그대로 둔다
                 // → 재접속 시 자동으로 다시 입장한다 (irssi/weechat 기본 동작과 같음)
@@ -473,13 +520,17 @@ impl ServerActor {
                 // args: [내 닉, 채널 타입(= * @), 채널, "닉 @닉 +닉 ..."]
                 // 한 채널의 목록이 여러 줄로 나뉘어 오므로 366까지 모은다
                 if let [_, .., channel, names] = args.as_slice() {
+                    let symbols = ctx
+                        .prefix_symbols
+                        .as_deref()
+                        .unwrap_or(DEFAULT_PREFIX_SYMBOLS);
                     ctx.pending_names
                         .entry(channel.to_lowercase())
                         .or_default()
                         .extend(
                             names
                                 .split_whitespace()
-                                .map(strip_nick_prefix)
+                                .map(|nick| strip_nick_prefix(nick, symbols))
                                 .filter(|nick| !nick.is_empty())
                                 .map(str::to_string),
                         );
@@ -617,6 +668,8 @@ struct SessionCtx {
     pending_joins: HashSet<String>,
     /// 376(RPL_ENDOFMOTD)까지 모으는 MOTD 줄 (375 머리줄 포함)
     motd: Option<Vec<String>>,
+    /// 005 PREFIX로 받은 채널 권한 접두사 기호 (예: `@+`). 받기 전엔 None
+    prefix_symbols: Option<String>,
 }
 
 /// 서버 버퍼에 그대로 보여줄 접속 정보 numeric (MOTD는 따로 모은다)
@@ -677,9 +730,49 @@ fn is_target_error(response: Response) -> bool {
     )
 }
 
-/// NAMES 응답의 닉 앞 채널 권한 접두사(`~&@%+`)를 뗀다. multi-prefix(`@+nick`)도 처리.
-fn strip_nick_prefix(nick: &str) -> &str {
-    nick.trim_start_matches(['~', '&', '@', '%', '+'])
+/// 005 PREFIX를 받기 전에 쓰는 채널 권한 접두사 (흔히 쓰이는 것 전부)
+const DEFAULT_PREFIX_SYMBOLS: &str = "~&@%+";
+
+/// NAMES 응답의 닉 앞 채널 권한 접두사(`symbols` 중 하나)를 뗀다. multi-prefix(`@+nick`)도 처리.
+fn strip_nick_prefix<'a>(nick: &'a str, symbols: &str) -> &'a str {
+    nick.trim_start_matches(|c| symbols.contains(c))
+}
+
+/// 005(RPL_ISUPPORT) 토큰 중 `PREFIX=(ov)@+`의 접두사 기호(`@+`)를 꺼낸다.
+/// `PREFIX=`(값 없음)는 권한 접두사가 없다는 뜻이라 빈 문자열이다.
+fn parse_isupport_prefix(token: &str) -> Option<String> {
+    let value = token.strip_prefix("PREFIX=")?;
+    if value.is_empty() {
+        return Some(String::new());
+    }
+    let (_modes, symbols) = value.strip_prefix('(')?.split_once(')')?;
+    Some(symbols.to_string())
+}
+
+/// MODE 변경을 `+nt`, `+o-v nick1 nick2` 형태로 (같은 부호는 묶고, 모드 문자 다음에 인자들)
+fn format_modes<T: ModeType>(modes: &[Mode<T>]) -> String {
+    let mut flags = String::new();
+    let mut sign = None;
+    for flag in modes.iter().map(Mode::flag) {
+        match flag.chars().next() {
+            Some(s @ ('+' | '-')) => {
+                if sign != Some(s) {
+                    flags.push(s);
+                    sign = Some(s);
+                }
+                flags.push_str(&flag[1..]);
+            }
+            _ => flags.push_str(&flag),
+        }
+    }
+    modes
+        .iter()
+        .filter_map(Mode::arg)
+        .fold(flags, |mut acc, arg| {
+            acc.push(' ');
+            acc.push_str(arg);
+            acc
+        })
 }
 
 /// 등록 단계에서 닉이 거부될 때 시도할 대체 닉 수 (`닉_`, `닉__`, `닉___`)
@@ -817,12 +910,41 @@ mod tests {
 
     #[test]
     fn test_strip_nick_prefix() {
-        assert_eq!(strip_nick_prefix("nick"), "nick");
-        assert_eq!(strip_nick_prefix("@op"), "op");
-        assert_eq!(strip_nick_prefix("+voice"), "voice");
-        assert_eq!(strip_nick_prefix("~owner"), "owner");
-        assert_eq!(strip_nick_prefix("@+both"), "both");
-        assert_eq!(strip_nick_prefix("@"), "");
+        let symbols = DEFAULT_PREFIX_SYMBOLS;
+        assert_eq!(strip_nick_prefix("nick", symbols), "nick");
+        assert_eq!(strip_nick_prefix("@op", symbols), "op");
+        assert_eq!(strip_nick_prefix("+voice", symbols), "voice");
+        assert_eq!(strip_nick_prefix("~owner", symbols), "owner");
+        assert_eq!(strip_nick_prefix("@+both", symbols), "both");
+        assert_eq!(strip_nick_prefix("@", symbols), "");
+        // 005 PREFIX=(ov)@+ 서버에선 ~/&로 시작하는 닉을 그대로 둔다
+        assert_eq!(strip_nick_prefix("~tilde", "@+"), "~tilde");
+        assert_eq!(strip_nick_prefix("@op", ""), "@op");
+    }
+
+    #[test]
+    fn test_parse_isupport_prefix() {
+        assert_eq!(
+            parse_isupport_prefix("PREFIX=(qaohv)~&@%+").as_deref(),
+            Some("~&@%+")
+        );
+        assert_eq!(
+            parse_isupport_prefix("PREFIX=(ov)@+").as_deref(),
+            Some("@+")
+        );
+        assert_eq!(parse_isupport_prefix("PREFIX=").as_deref(), Some(""));
+        assert_eq!(parse_isupport_prefix("CHANTYPES=#"), None);
+        assert_eq!(parse_isupport_prefix("PREFIX=garbage"), None);
+    }
+
+    #[test]
+    fn test_format_modes() {
+        let modes = Mode::as_channel_modes(&["+o-v", "lee", "bob"]).unwrap();
+        assert_eq!(format_modes(&modes), "+o-v lee bob");
+        let modes = Mode::as_channel_modes(&["+nt"]).unwrap();
+        assert_eq!(format_modes(&modes), "+nt");
+        let modes = Mode::as_channel_modes(&["+o-v+b", "a", "b", "c!*@*"]).unwrap();
+        assert_eq!(format_modes(&modes), "+o-v+b a b c!*@*");
     }
 }
 
@@ -1874,6 +1996,87 @@ mod quit_tests {
             .filter(|line| line.starts_with("JOIN"))
             .collect();
         assert_eq!(joins, ["JOIN #saved"]);
+    }
+
+    // ==================== ISUPPORT / MODE / INVITE ====================
+
+    /// 005 PREFIX를 받은 뒤엔 그 기호만 NAMES에서 뗀다 (`~`로 시작하는 닉을 보존).
+    #[tokio::test]
+    async fn names_use_isupport_prefix_symbols() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 005 nick PREFIX=(ov)@+ CHANTYPES=# :are supported by this server\r\n",
+            ":mock 353 nick = #a :@op ~tilde\r\n",
+            ":mock 366 nick #a :End of /NAMES list.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let users = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(UiEvent::Ui(crate::client::event::UIEventPayload::Names {
+                    users,
+                    ..
+                })) = h.rx.recv().await
+                {
+                    return users;
+                }
+            }
+        })
+        .await
+        .expect("no names event");
+        assert_eq!(users, ["op", "~tilde"]);
+    }
+
+    /// 채널 MODE는 바꾼 닉(서버면 None)과 함께, INVITE는 서버 버퍼 메시지로 보낸다.
+    #[tokio::test]
+    async fn channel_mode_and_invite_are_forwarded() {
+        let port = spawn_join_reply_mock(concat!(
+            ":irc.mock.net MODE #a +nt\r\n",
+            ":op!u@mock MODE #a +o-v lee bob\r\n",
+            ":bob!u@mock INVITE nick #secret\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        assert_eq!(
+            next_system_message(&mut h.rx).await,
+            "서버에 연결되었습니다."
+        );
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut modes = Vec::new();
+        let invite = timeout(Duration::from_secs(5), async {
+            loop {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::ChannelMode {
+                        channel,
+                        by,
+                        modes: changed,
+                        ..
+                    })) => modes.push((channel, by, changed)),
+                    Some(UiEvent::SystemMessage(p)) => return p.message,
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no invite message");
+
+        assert_eq!(
+            modes,
+            [
+                ("#a".into(), None, "+nt".into()),
+                ("#a".into(), Some("op".into()), "+o-v lee bob".into()),
+            ]
+        );
+        assert_eq!(invite, "bob invited you to #secret");
     }
 
     // ==================== 접속 정보 / MOTD ====================
