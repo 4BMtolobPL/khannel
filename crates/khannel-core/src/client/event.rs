@@ -192,6 +192,16 @@ impl UIEventBuilder {
         self
     }
 
+    pub fn names(mut self, server_id: ServerId, channel: String, users: Vec<String>) -> Self {
+        self.payload = Some(UIEventPayload::Names {
+            server_id,
+            channel,
+            users,
+        });
+
+        self
+    }
+
     pub fn error(mut self, server_id: ServerId, message: String) -> Self {
         self.payload = Some(UIEventPayload::Error { server_id, message });
 
@@ -289,6 +299,12 @@ pub enum UIEventPayload {
         server_id: ServerId,
         channel: ChannelId,
         topic: Option<String>,
+    },
+    /// 채널 유저 목록 전체 (NAMES 응답). 권한 접두사는 제거된 닉 목록 — UI는 목록을 교체한다
+    Names {
+        server_id: ServerId,
+        channel: ChannelId,
+        users: Vec<String>,
     },
     Error {
         server_id: ServerId,

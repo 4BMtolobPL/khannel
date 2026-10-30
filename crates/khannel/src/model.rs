@@ -525,6 +525,17 @@ impl IrcModel {
                     let _ = server;
                 }
             }
+            P::Names {
+                server_id,
+                channel,
+                users,
+            } => {
+                // 입장한 채널에만 반영한다 (인자 없는 NAMES의 `*` 등으로 채널을 만들지 않음)
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    channel.users = users.into_iter().collect();
+                }
+            }
             P::Error { server_id, message } => {
                 self.add_server_message(
                     server_id,
