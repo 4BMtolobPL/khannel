@@ -1396,14 +1396,24 @@ mod quit_tests {
 
     /// 001로 등록을 끝내 주고, JOIN을 받으면 `replies`를 그대로 돌려주는 mock IRC 서버.
     async fn spawn_join_reply_mock(replies: &'static str) -> u16 {
+        spawn_logging_join_reply_mock(replies).await.0
+    }
+
+    /// [`spawn_join_reply_mock`]과 같고, 클라이언트가 보낸 줄을 기록해 함께 돌려준다.
+    async fn spawn_logging_join_reply_mock(
+        replies: &'static str,
+    ) -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
 
         tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let (read, mut write) = socket.into_split();
             let mut lines = BufReader::new(read).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                log.lock().unwrap().push(line.clone());
                 if line.starts_with("USER") {
                     let _ = write.write_all(b":mock 001 nick :Welcome\r\n").await;
                 }
@@ -1413,7 +1423,29 @@ mod quit_tests {
             }
         });
 
-        port
+        (port, sent)
+    }
+
+    /// 표식 메시지를 보내고 mock 서버에 도착할 때까지 기다린 뒤, 그때까지 받은 줄을 돌려준다.
+    /// 송신은 순서대로 나가므로 그 전에 생긴 응답(중복 포함)은 모두 표식보다 먼저 도착해 있다.
+    async fn lines_until_marker(
+        h: &NickHarness,
+        sent: &std::sync::Mutex<Vec<String>>,
+    ) -> Vec<String> {
+        h.api
+            .send_message(h.server_id, "#marker", "marker")
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let lines = sent.lock().unwrap().clone();
+                if lines.iter().any(|line| line.starts_with("PRIVMSG #marker")) {
+                    return lines;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("marker never reached the server")
     }
 
     /// 여러 줄의 353을 366까지 모아, 접두사를 뗀 전체 목록으로 한 번에 보낸다.
@@ -1762,6 +1794,86 @@ mod quit_tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    // ==================== irc 크레이트 기본 동작과의 중복 ====================
+
+    /// CTCP 요청에는 보낸 사람에게 한 번만 응답한다. 채널로 온 요청도 채널이 아닌 보낸 사람에게.
+    /// (이전: irc 크레이트의 ctcp feature도 응답해 중복됐고, 채널 요청엔 채널 전체로 응답했다)
+    #[tokio::test]
+    async fn ctcp_requests_get_a_single_reply_to_sender() {
+        let (port, sent) = spawn_logging_join_reply_mock(concat!(
+            ":bob!u@mock PRIVMSG nick :\x01VERSION\x01\r\n",
+            ":bob!u@mock PRIVMSG #a :\x01PING 123\x01\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+        // 두 응답이 다 나간 뒤에 표식을 보낸다
+        timeout(Duration::from_secs(5), async {
+            while sent
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.starts_with("NOTICE"))
+                .count()
+                < 2
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("ctcp replies not sent");
+
+        let notices: Vec<String> = lines_until_marker(&h, &sent)
+            .await
+            .into_iter()
+            .filter(|line| line.starts_with("NOTICE"))
+            .collect();
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert!(notices[0].starts_with("NOTICE bob "), "{notices:?}");
+        assert!(notices[0].contains("VERSION khannel"), "{notices:?}");
+        assert!(notices[1].starts_with("NOTICE bob "), "{notices:?}");
+        assert!(notices[1].contains("PING 123"), "{notices:?}");
+    }
+
+    /// 접속 후 저장된 채널에는 JOIN을 한 번만 보낸다.
+    /// (이전: irc 크레이트의 channel-lists feature가 376에서 입장한 채널로 JOIN을 다시 보냈다)
+    #[tokio::test]
+    async fn saved_channel_is_joined_once_after_motd() {
+        let (port, sent) = spawn_logging_join_reply_mock(concat!(
+            ":nick!u@mock JOIN #saved\r\n",
+            ":mock 353 nick = #saved :nick\r\n",
+            ":mock 366 nick #saved :End of /NAMES list.\r\n",
+            ":mock 376 nick :End of /MOTD command.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+        h.server().insert_channel("#saved", false);
+
+        h.connect();
+        // 376까지 처리된 뒤(= MOTD 메시지 없이 끝나므로 NAMES 이벤트 이후) 표식을 보낸다
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(UiEvent::Ui(crate::client::event::UIEventPayload::Names { .. })) =
+                    h.rx.recv().await
+                {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("no names event");
+
+        let joins: Vec<String> = lines_until_marker(&h, &sent)
+            .await
+            .into_iter()
+            .filter(|line| line.starts_with("JOIN"))
+            .collect();
+        assert_eq!(joins, ["JOIN #saved"]);
     }
 
     // ==================== 접속 정보 / MOTD ====================
