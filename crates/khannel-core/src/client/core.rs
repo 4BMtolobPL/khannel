@@ -10,7 +10,7 @@ use futures::prelude::*;
 use irc::client::ClientStream;
 use irc::client::prelude::*;
 use irc::error;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -217,6 +217,7 @@ impl ServerActor {
                 if let Err(e) = client.send_join(&ch) {
                     error!("Failed to send join message: {e}");
                 }
+                ctx.pending_joins.insert(ch.to_lowercase());
             }
             ServerCommand::Privmsg { target, message } => {
                 if let Err(e) = client.send_privmsg(&target, &message) {
@@ -338,6 +339,14 @@ impl ServerActor {
                 }
             }
             Command::JOIN(chanlist, _chankey, _real_name) => {
+                // 내 입장이 확인됐으면 더 이상 실패를 기다리지 않는다
+                if self
+                    .server
+                    .current_nickname()
+                    .eq_ignore_ascii_case(&source_nickname)
+                {
+                    ctx.pending_joins.remove(&chanlist.to_lowercase());
+                }
                 emit_ui_event(&self.ui_sink)
                     .join(self.server_id, chanlist, source_nickname)
                     .emit();
@@ -421,7 +430,7 @@ impl ServerActor {
             Command::ERROR(message) => {
                 warn!(message = %message, "Server command error");
                 emit_ui_event(&self.ui_sink)
-                    .error(self.server_id, message)
+                    .error(self.server_id, None, message)
                     .emit();
             }
             Command::Response(Response::RPL_WELCOME, args) => {
@@ -445,10 +454,14 @@ impl ServerActor {
                     }
                 }
 
-                // 기존 채널이 존재하면 연결
+                // 기존 채널이 존재하면 연결. 커맨드 채널(ServerCommand::Join)을 거치지 않고 바로
+                // 보낸다 — 사용자 요청 입장(pending_joins)과 구분해, 자동 재입장이 실패해도
+                // 저장된 채널을 지우지 않기 위함
                 for (channel_name, _channel_state) in self.server.channels() {
-                    self.server
-                        .send_command(ServerCommand::Join(channel_name))?;
+                    info!(event = "auto_join", channel = %channel_name);
+                    if let Err(e) = client.send_join(&channel_name) {
+                        error!("Failed to send join message: {e}");
+                    }
                 }
 
                 emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Connected);
@@ -491,6 +504,12 @@ impl ServerActor {
                 // 그래도 안될경우 오류 던지기
                 trace!("닉네임 중복");
             }
+            Command::Response(response, args) if is_join_error(response) => {
+                self.handle_join_error(ctx, &args);
+            }
+            Command::Response(response, args) if is_target_error(response) => {
+                self.emit_numeric_error(&args);
+            }
             _ => {
                 // TODO: Command 다른것도 추가하기
                 debug!(event = "unprocessed_irc_message", command = ?message.command);
@@ -498,6 +517,43 @@ impl ServerActor {
         }
 
         Ok(())
+    }
+
+    /// JOIN 실패 numeric. args: [내 닉, 채널, 사유]
+    ///
+    /// 이번 세션에 사용자가 요청한 입장이면 저장된 채널을 지운다 — 남겨 두면 재접속할 때마다
+    /// 자동 재입장이 같은 이유로 실패한다. 자동 재입장(001 이후)이 실패한 경우는 밴/초대 전용
+    /// 같은 일시적 사유일 수 있으므로 알리기만 하고 채널은 유지한다.
+    fn handle_join_error(&self, ctx: &mut SessionCtx, args: &[String]) {
+        let [_, channel, .., reason] = args else {
+            self.emit_numeric_error(args);
+            return;
+        };
+        if !ctx.pending_joins.remove(&channel.to_lowercase()) {
+            self.emit_numeric_error(args);
+            return;
+        }
+
+        warn!(event = "join_failed", channel = %channel, reason = %reason);
+        if self.server.remove_channel(channel).is_some() {
+            self.persist();
+        }
+        emit_ui_event(&self.ui_sink)
+            .join_failed(self.server_id, channel.clone(), reason.clone())
+            .emit();
+    }
+
+    /// 대상(채널/닉)이 있는 에러 numeric을 UI 에러로 보낸다. args: [내 닉, 대상, 사유]
+    fn emit_numeric_error(&self, args: &[String]) {
+        let (target, reason) = match args {
+            [_, target, .., reason] => (Some(target.clone()), reason.clone()),
+            [.., reason] => (None, reason.clone()),
+            [] => return,
+        };
+        debug!(event = "numeric_error", target = ?target, reason = %reason);
+        emit_ui_event(&self.ui_sink)
+            .error(self.server_id, target, reason)
+            .emit();
     }
 
     #[instrument(skip_all, fields(server_id = %self.server_id))]
@@ -535,6 +591,36 @@ struct SessionCtx {
     alt_attempts: usize,
     /// 366(RPL_ENDOFNAMES)까지 모으는 채널별 NAMES(353) 응답. 키는 소문자 채널명
     pending_names: HashMap<String, Vec<String>>,
+    /// 사용자가 요청했고 아직 JOIN 응답이 오지 않은 채널 (소문자). 자동 재입장은 포함하지 않는다
+    pending_joins: HashSet<String>,
+}
+
+/// 채널 입장 실패 numeric
+fn is_join_error(response: Response) -> bool {
+    matches!(
+        response,
+        Response::ERR_NOSUCHCHANNEL
+            | Response::ERR_TOOMANYCHANNELS
+            | Response::ERR_CHANNELISFULL
+            | Response::ERR_INVITEONLYCHAN
+            | Response::ERR_BANNEDFROMCHAN
+            | Response::ERR_BADCHANNELKEY
+            | Response::ERR_BADCHANMASK
+            // RFC상 ERR_NOCHANMODES지만 Libera 등에서는 "등록된 닉만 입장 가능(+r)"
+            | Response::ERR_NOCHANMODES
+    )
+}
+
+/// 대상(채널/닉)에 대한 요청이 실패했음을 알리는 numeric
+fn is_target_error(response: Response) -> bool {
+    matches!(
+        response,
+        Response::ERR_NOSUCHNICK
+            | Response::ERR_CANNOTSENDTOCHAN
+            | Response::ERR_USERNOTINCHANNEL
+            | Response::ERR_NOTONCHANNEL
+            | Response::ERR_CHANOPRIVSNEEDED
+    )
 }
 
 /// NAMES 응답의 닉 앞 채널 권한 접두사(`~&@%+`)를 뗀다. multi-prefix(`@+nick`)도 처리.
@@ -1474,6 +1560,119 @@ mod quit_tests {
             ]
         );
         assert!(h.server().contains_channel("#a"));
+    }
+
+    // ==================== 에러 numeric ====================
+
+    /// 001로 등록을 끝내 주고, 모든 JOIN을 474(밴)로 거부하는 mock IRC 서버.
+    async fn spawn_join_reject_mock() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.starts_with("USER") {
+                    let _ = write.write_all(b":mock 001 nick :Welcome\r\n").await;
+                }
+                if let Some(channel) = line.strip_prefix("JOIN ") {
+                    let reply = format!(":mock 474 nick {channel} :Cannot join channel (+b)\r\n");
+                    let _ = write.write_all(reply.as_bytes()).await;
+                }
+            }
+        });
+
+        port
+    }
+
+    /// 다음 JoinFailed 또는 Error UI 이벤트를 기다린다
+    async fn next_error_event(
+        rx: &mut UnboundedReceiver<UiEvent>,
+    ) -> crate::client::event::UIEventPayload {
+        use crate::client::event::UIEventPayload as P;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::Ui(payload @ (P::JoinFailed { .. } | P::Error { .. }))) => {
+                        return payload;
+                    }
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no error event")
+    }
+
+    /// 사용자가 요청한 입장이 실패하면 저장된 채널을 지우고 JoinFailed를 보낸다.
+    #[tokio::test]
+    async fn requested_join_failure_removes_saved_channel() {
+        use crate::client::event::UIEventPayload as P;
+        let port = spawn_join_reject_mock().await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#banned").unwrap();
+        assert!(h.server().contains_channel("#banned"));
+
+        match next_error_event(&mut h.rx).await {
+            P::JoinFailed {
+                channel, reason, ..
+            } => {
+                assert_eq!(channel, "#banned");
+                assert_eq!(reason, "Cannot join channel (+b)");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(!h.server().contains_channel("#banned"));
+        assert_eq!(load_saved_channels(&h.path).get("#banned"), None);
+    }
+
+    /// 접속 시 자동 재입장이 실패하면 알리기만 하고 저장된 채널은 유지한다.
+    #[tokio::test]
+    async fn auto_rejoin_failure_keeps_saved_channel() {
+        use crate::client::event::UIEventPayload as P;
+        let port = spawn_join_reject_mock().await;
+        let mut h = NickHarness::new(port);
+        h.server().insert_channel("#saved", true);
+
+        h.connect();
+        match next_error_event(&mut h.rx).await {
+            P::Error {
+                target, message, ..
+            } => {
+                assert_eq!(target.as_deref(), Some("#saved"));
+                assert_eq!(message, "Cannot join channel (+b)");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(h.server().contains_channel("#saved"));
+    }
+
+    /// 대상이 있는 에러(404 등)는 대상과 사유를 담은 Error로 보낸다.
+    #[tokio::test]
+    async fn target_error_numeric_is_forwarded_with_target() {
+        use crate::client::event::UIEventPayload as P;
+        let port = spawn_join_reply_mock(":mock 404 nick #a :Cannot send to channel\r\n").await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        match next_error_event(&mut h.rx).await {
+            P::Error {
+                target, message, ..
+            } => {
+                assert_eq!(target.as_deref(), Some("#a"));
+                assert_eq!(message, "Cannot send to channel");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     // ==================== 서버 삭제 ====================

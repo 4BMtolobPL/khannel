@@ -267,8 +267,22 @@ impl UIEventBuilder {
         self
     }
 
-    pub fn error(mut self, server_id: ServerId, message: String) -> Self {
-        self.payload = Some(UIEventPayload::Error { server_id, message });
+    pub fn error(mut self, server_id: ServerId, target: Option<String>, message: String) -> Self {
+        self.payload = Some(UIEventPayload::Error {
+            server_id,
+            target,
+            message,
+        });
+
+        self
+    }
+
+    pub fn join_failed(mut self, server_id: ServerId, channel: String, reason: String) -> Self {
+        self.payload = Some(UIEventPayload::JoinFailed {
+            server_id,
+            channel,
+            reason,
+        });
 
         self
     }
@@ -395,7 +409,15 @@ pub enum UIEventPayload {
     },
     Error {
         server_id: ServerId,
+        /// 실패한 요청의 대상(채널/닉). 서버 ERROR처럼 대상이 없으면 None
+        target: Option<String>,
         message: String,
+    },
+    /// 사용자가 요청한 채널 입장 실패. 코어는 저장된 채널을 이미 지웠다 — UI도 채널을 지운다
+    JoinFailed {
+        server_id: ServerId,
+        channel: ChannelId,
+        reason: String,
     },
 }
 

@@ -135,6 +135,14 @@ fn message_buffer_name(target: &str, sender: &str, own_nickname: Option<&str>) -
     }
 }
 
+/// 에러 표시 문구. 대상 버퍼 밖(서버 버퍼)에 쌓을 때만 대상을 앞에 붙인다.
+fn error_content(target: Option<&str>, message: &str) -> String {
+    match target {
+        Some(target) => format!("Error: {target}: {message}"),
+        None => format!("Error: {message}"),
+    }
+}
+
 /// KICK 표시 문구. 내가 강퇴당했으면 주어를 "You"로.
 fn kick_message(nick: &str, by: &str, reason: Option<&str>, own: bool) -> String {
     let suffix = reason.map(|r| format!(" ({r})")).unwrap_or_default();
@@ -635,14 +643,50 @@ impl IrcModel {
                     channel.users = users.into_iter().collect();
                 }
             }
-            P::Error { server_id, message } => {
+            P::Error {
+                server_id,
+                target,
+                message,
+            } => {
+                // 대상 버퍼(채널/DM)가 열려 있으면 거기에, 아니면 대상을 붙여 서버 버퍼에
+                let buffer_id = target
+                    .as_deref()
+                    .map(|target| self.get_channel_id(&server_id, target))
+                    .filter(|channel_id| self.channels.contains_key(channel_id));
+                let content =
+                    error_content(target.as_deref().filter(|_| buffer_id.is_none()), &message);
+                let message = ChatMessage {
+                    kind: MessageType::System,
+                    id: uuid::Uuid::now_v7().to_string(),
+                    nickname: None,
+                    content,
+                    timestamp: now_ms(),
+                };
+                match buffer_id {
+                    Some(channel_id) => self.add_message(server_id, channel_id, message),
+                    None => self.add_server_message(server_id, message),
+                }
+            }
+            P::JoinFailed {
+                server_id,
+                channel,
+                reason,
+            } => {
+                // 이미 열려 있던 채널(예: 강퇴 후 재입장 시도)이면 코어처럼 지운다
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if self.channels.remove(&channel_id).is_some() {
+                    self.messages.remove(&channel_id);
+                    if self.current_channel_id.as_ref() == Some(&channel_id) {
+                        self.current_channel_id = None;
+                    }
+                }
                 self.add_server_message(
                     server_id,
                     ChatMessage {
                         kind: MessageType::System,
                         id: uuid::Uuid::now_v7().to_string(),
                         nickname: None,
-                        content: format!("Error: {}", message),
+                        content: format!("Cannot join {channel}: {reason}"),
                         timestamp: now_ms(),
                     },
                 );
@@ -1109,6 +1153,18 @@ mod tests {
     fn nick_comparison_is_case_insensitive() {
         assert!(nick_eq("Kim", "kim"));
         assert!(!nick_eq("kim", "kimm"));
+    }
+
+    #[test]
+    fn error_content_prefixes_target_only_outside_its_buffer() {
+        assert_eq!(
+            error_content(Some("#a"), "Cannot send to channel"),
+            "Error: #a: Cannot send to channel"
+        );
+        assert_eq!(
+            error_content(None, "Cannot send to channel"),
+            "Error: Cannot send to channel"
+        );
     }
 
     #[test]
