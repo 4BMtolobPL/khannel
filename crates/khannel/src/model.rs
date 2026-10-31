@@ -24,7 +24,16 @@ pub type MessageId = String;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MessageType {
     User,
+    /// `/me` 액션 (`* nick 내용`)
+    Action,
     System,
+}
+
+impl MessageType {
+    /// 사람이 보낸 대화 메시지인지 (unread/divider 집계 대상)
+    pub fn is_user_message(self) -> bool {
+        matches!(self, Self::User | Self::Action)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +132,48 @@ fn message_buffer_name(target: &str, sender: &str, own_nickname: Option<&str>) -
         sender.to_string()
     } else {
         target.to_string()
+    }
+}
+
+/// 에러 표시 문구. 대상 버퍼 밖(서버 버퍼)에 쌓을 때만 대상을 앞에 붙인다.
+fn error_content(target: Option<&str>, message: &str) -> String {
+    match target {
+        Some(target) => format!("Error: {target}: {message}"),
+        None => format!("Error: {message}"),
+    }
+}
+
+/// 채널 MODE 표시 문구. 서버가 건 모드면 주어를 "Server"로.
+fn mode_message(by: Option<&str>, modes: &str) -> String {
+    format!("{} sets mode {modes}", by.unwrap_or("Server"))
+}
+
+/// KICK 표시 문구. 내가 강퇴당했으면 주어를 "You"로.
+fn kick_message(nick: &str, by: &str, reason: Option<&str>, own: bool) -> String {
+    let suffix = reason.map(|r| format!(" ({r})")).unwrap_or_default();
+    if own {
+        format!("You were kicked by {by}{suffix}")
+    } else {
+        format!("{nick} was kicked by {by}{suffix}")
+    }
+}
+
+/// NOTICE 표시 문구. 닉이 보낸 notice는 `-nick- 내용`, 서버 notice는 내용만.
+fn notice_content(nick: Option<&str>, content: &str) -> String {
+    match nick {
+        Some(nick) => format!("-{nick}- {content}"),
+        None => content.to_string(),
+    }
+}
+
+/// 토픽 이벤트를 채널에 남길 시스템 메시지.
+/// 누가 바꾼 경우와 입장 시 받은 현재 토픽을 구분하고, 토픽이 없는 채널에 입장하면 남기지 않는다.
+fn topic_message(topic: Option<&str>, changed_by: Option<&str>) -> Option<String> {
+    match (changed_by, topic) {
+        (Some(nick), Some(topic)) => Some(format!("{nick} changed the topic to: {topic}")),
+        (Some(nick), None) => Some(format!("{nick} cleared the topic")),
+        (None, Some(topic)) => Some(format!("Topic: {topic}")),
+        (None, None) => None,
     }
 }
 
@@ -334,6 +385,7 @@ impl IrcModel {
                 channel,
                 nick,
                 content,
+                action,
                 timestamp,
             } => {
                 let own_nickname = self.servers.get(&server_id).map(|s| s.nickname.as_str());
@@ -344,13 +396,40 @@ impl IrcModel {
                     server_id,
                     channel_id,
                     ChatMessage {
-                        kind: MessageType::User,
+                        kind: if action {
+                            MessageType::Action
+                        } else {
+                            MessageType::User
+                        },
                         id: uuid::Uuid::now_v7().to_string(),
                         nickname: Some(nick),
                         content,
                         timestamp,
                     },
                 );
+            }
+            P::Notice {
+                server_id,
+                target,
+                nick,
+                content,
+                timestamp,
+            } => {
+                let message = ChatMessage {
+                    kind: MessageType::System,
+                    id: uuid::Uuid::now_v7().to_string(),
+                    nickname: None,
+                    content: notice_content(nick.as_deref(), &content),
+                    timestamp,
+                };
+                // 입장한 채널로 온 notice만 채널 버퍼에. 나머지(NickServ, 서버 공지 등)는
+                // DM 버퍼를 만들지 않고 서버 버퍼에 쌓는다
+                let channel_id = self.get_channel_id(&server_id, &target);
+                if is_channel_name(&target) && self.channels.contains_key(&channel_id) {
+                    self.add_message(server_id, channel_id, message);
+                } else {
+                    self.add_server_message(server_id, message);
+                }
             }
             P::Join {
                 server_id,
@@ -416,6 +495,60 @@ impl IrcModel {
                             },
                         );
                     }
+                }
+            }
+            P::ChannelMode {
+                server_id,
+                channel,
+                by,
+                modes,
+            } => {
+                // 입장한 채널에만 남긴다 (모드 변경으로 채널을 만들지 않음)
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if self.channels.contains_key(&channel_id) {
+                    self.add_message(
+                        server_id,
+                        channel_id,
+                        ChatMessage {
+                            kind: MessageType::System,
+                            id: uuid::Uuid::now_v7().to_string(),
+                            nickname: None,
+                            content: mode_message(by.as_deref(), &modes),
+                            timestamp: now_ms(),
+                        },
+                    );
+                }
+            }
+            P::Kick {
+                server_id,
+                channel,
+                nick,
+                by,
+                reason,
+            } => {
+                let own_nickname = self.servers.get(&server_id).map(|s| s.nickname.clone());
+                let own_kick = own_nickname.is_some_and(|own| nick_eq(&nick, &own));
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    // 내가 강퇴돼도 Part와 달리 채널 버퍼는 남긴다 — 사유를 볼 수 있어야 한다.
+                    // 더 이상 채널에 없으므로 유저 목록은 비운다
+                    if own_kick {
+                        channel.users.clear();
+                    } else {
+                        channel.users.remove(&nick);
+                    }
+
+                    self.add_message(
+                        server_id,
+                        channel_id,
+                        ChatMessage {
+                            kind: MessageType::System,
+                            id: uuid::Uuid::now_v7().to_string(),
+                            nickname: None,
+                            content: kick_message(&nick, &by, reason.as_deref(), own_kick),
+                            timestamp: now_ms(),
+                        },
+                    );
                 }
             }
             P::Quit {
@@ -503,13 +636,15 @@ impl IrcModel {
                 server_id,
                 channel,
                 topic,
+                changed_by,
             } => {
                 self.ensure_channel(server_id, &channel);
-                if let Some(server) = self.servers.get(&server_id).cloned() {
-                    let channel_id = self.get_channel_id(&server_id, &channel);
-                    if let Some(channel) = self.channels.get_mut(&channel_id) {
-                        channel.topic = topic.clone();
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    let content = topic_message(topic.as_deref(), changed_by.as_deref());
+                    channel.topic = topic;
 
+                    if let Some(content) = content {
                         self.add_message(
                             server_id,
                             channel_id,
@@ -517,22 +652,68 @@ impl IrcModel {
                                 kind: MessageType::System,
                                 id: uuid::Uuid::now_v7().to_string(),
                                 nickname: None,
-                                content: format!("Topic set to: {}", topic.unwrap_or_default()),
+                                content,
                                 timestamp: now_ms(),
                             },
                         );
                     }
-                    let _ = server;
                 }
             }
-            P::Error { server_id, message } => {
+            P::Names {
+                server_id,
+                channel,
+                users,
+            } => {
+                // 입장한 채널에만 반영한다 (인자 없는 NAMES의 `*` 등으로 채널을 만들지 않음)
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    channel.users = users.into_iter().collect();
+                }
+            }
+            P::Error {
+                server_id,
+                target,
+                message,
+            } => {
+                // 대상 버퍼(채널/DM)가 열려 있으면 거기에, 아니면 대상을 붙여 서버 버퍼에
+                let buffer_id = target
+                    .as_deref()
+                    .map(|target| self.get_channel_id(&server_id, target))
+                    .filter(|channel_id| self.channels.contains_key(channel_id));
+                let content =
+                    error_content(target.as_deref().filter(|_| buffer_id.is_none()), &message);
+                let message = ChatMessage {
+                    kind: MessageType::System,
+                    id: uuid::Uuid::now_v7().to_string(),
+                    nickname: None,
+                    content,
+                    timestamp: now_ms(),
+                };
+                match buffer_id {
+                    Some(channel_id) => self.add_message(server_id, channel_id, message),
+                    None => self.add_server_message(server_id, message),
+                }
+            }
+            P::JoinFailed {
+                server_id,
+                channel,
+                reason,
+            } => {
+                // 이미 열려 있던 채널(예: 강퇴 후 재입장 시도)이면 코어처럼 지운다
+                let channel_id = self.get_channel_id(&server_id, &channel);
+                if self.channels.remove(&channel_id).is_some() {
+                    self.messages.remove(&channel_id);
+                    if self.current_channel_id.as_ref() == Some(&channel_id) {
+                        self.current_channel_id = None;
+                    }
+                }
                 self.add_server_message(
                     server_id,
                     ChatMessage {
                         kind: MessageType::System,
                         id: uuid::Uuid::now_v7().to_string(),
                         nickname: None,
-                        content: format!("Error: {}", message),
+                        content: format!("Cannot join {channel}: {reason}"),
                         timestamp: now_ms(),
                     },
                 );
@@ -622,7 +803,7 @@ impl IrcModel {
 
         // 현재 채널이 아니면 unread 증가
         if !is_current
-            && message.kind == MessageType::User
+            && message.kind.is_user_message()
             && let Some(channel) = self.channels.get_mut(&channel_id)
         {
             channel.unread = channel_unread + 1;
@@ -999,6 +1180,59 @@ mod tests {
     fn nick_comparison_is_case_insensitive() {
         assert!(nick_eq("Kim", "kim"));
         assert!(!nick_eq("kim", "kimm"));
+    }
+
+    #[test]
+    fn error_content_prefixes_target_only_outside_its_buffer() {
+        assert_eq!(
+            error_content(Some("#a"), "Cannot send to channel"),
+            "Error: #a: Cannot send to channel"
+        );
+        assert_eq!(
+            error_content(None, "Cannot send to channel"),
+            "Error: Cannot send to channel"
+        );
+    }
+
+    #[test]
+    fn mode_message_names_setter() {
+        assert_eq!(mode_message(Some("op"), "+o lee"), "op sets mode +o lee");
+        assert_eq!(mode_message(None, "+nt"), "Server sets mode +nt");
+    }
+
+    #[test]
+    fn kick_message_mentions_kicker_and_reason() {
+        assert_eq!(
+            kick_message("lee", "op", Some("spam"), false),
+            "lee was kicked by op (spam)"
+        );
+        assert_eq!(
+            kick_message("kim", "op", None, true),
+            "You were kicked by op"
+        );
+    }
+
+    #[test]
+    fn notice_content_shows_sender_nick() {
+        assert_eq!(notice_content(Some("NickServ"), "hi"), "-NickServ- hi");
+        assert_eq!(notice_content(None, "*** Looking up"), "*** Looking up");
+    }
+
+    #[test]
+    fn topic_message_distinguishes_change_from_current_topic() {
+        assert_eq!(
+            topic_message(Some("hi"), Some("kim")).as_deref(),
+            Some("kim changed the topic to: hi")
+        );
+        assert_eq!(
+            topic_message(None, Some("kim")).as_deref(),
+            Some("kim cleared the topic")
+        );
+        assert_eq!(
+            topic_message(Some("hi"), None).as_deref(),
+            Some("Topic: hi")
+        );
+        assert_eq!(topic_message(None, None), None);
     }
 
     #[test]

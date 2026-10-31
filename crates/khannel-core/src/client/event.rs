@@ -129,6 +129,45 @@ impl UIEventBuilder {
             channel,
             nick: nickname,
             content,
+            action: false,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        });
+
+        self
+    }
+
+    /// `/me` 액션 메시지 (CTCP ACTION). `content`는 `\x01ACTION`을 벗긴 본문
+    pub fn action_message(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        nickname: String,
+        content: String,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::UserMessage {
+            server_id,
+            channel,
+            nick: nickname,
+            content,
+            action: true,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        });
+
+        self
+    }
+
+    pub fn notice(
+        mut self,
+        server_id: ServerId,
+        target: String,
+        nickname: Option<String>,
+        content: String,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::Notice {
+            server_id,
+            target,
+            nick: nickname,
+            content,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         });
 
@@ -162,6 +201,42 @@ impl UIEventBuilder {
         self
     }
 
+    pub fn channel_mode(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        by: Option<String>,
+        modes: String,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::ChannelMode {
+            server_id,
+            channel,
+            by,
+            modes,
+        });
+
+        self
+    }
+
+    pub fn kick(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        nickname: String,
+        by: String,
+        reason: Option<String>,
+    ) -> Self {
+        self.payload = Some(UIEventPayload::Kick {
+            server_id,
+            channel,
+            nick: nickname,
+            by,
+            reason,
+        });
+
+        self
+    }
+
     pub fn quit(mut self, server_id: ServerId, nickname: String, reason: Option<String>) -> Self {
         self.payload = Some(UIEventPayload::Quit {
             server_id,
@@ -182,18 +257,49 @@ impl UIEventBuilder {
         self
     }
 
-    pub fn topic(mut self, server_id: ServerId, channel: String, topic: Option<String>) -> Self {
+    pub fn topic(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        topic: Option<String>,
+        changed_by: Option<String>,
+    ) -> Self {
         self.payload = Some(UIEventPayload::Topic {
             server_id,
             channel,
             topic,
+            changed_by,
         });
 
         self
     }
 
-    pub fn error(mut self, server_id: ServerId, message: String) -> Self {
-        self.payload = Some(UIEventPayload::Error { server_id, message });
+    pub fn names(mut self, server_id: ServerId, channel: String, users: Vec<String>) -> Self {
+        self.payload = Some(UIEventPayload::Names {
+            server_id,
+            channel,
+            users,
+        });
+
+        self
+    }
+
+    pub fn error(mut self, server_id: ServerId, target: Option<String>, message: String) -> Self {
+        self.payload = Some(UIEventPayload::Error {
+            server_id,
+            target,
+            message,
+        });
+
+        self
+    }
+
+    pub fn join_failed(mut self, server_id: ServerId, channel: String, reason: String) -> Self {
+        self.payload = Some(UIEventPayload::JoinFailed {
+            server_id,
+            channel,
+            reason,
+        });
 
         self
     }
@@ -262,6 +368,17 @@ pub enum UIEventPayload {
         channel: ChannelId,
         nick: String,
         content: String,
+        /// `/me` 액션(CTCP ACTION)이면 true — UI는 `* nick 내용`으로 표시한다
+        action: bool,
+        timestamp: u64,
+    },
+    /// NOTICE. `target`은 받은 그대로(채널/내 닉/`*` 등) — 어느 버퍼에 쌓을지는 UI가 정한다
+    Notice {
+        server_id: ServerId,
+        target: String,
+        /// 보낸 닉. 서버가 보낸 notice면 None
+        nick: Option<String>,
+        content: String,
         timestamp: u64,
     },
     Join {
@@ -273,6 +390,23 @@ pub enum UIEventPayload {
         server_id: ServerId,
         channel: ChannelId,
         nick: String,
+        reason: Option<String>,
+    },
+    /// 채널 모드 변경. `modes`는 `+o-v nick1 nick2` 형태
+    ChannelMode {
+        server_id: ServerId,
+        channel: ChannelId,
+        /// 모드를 바꾼 닉. 서버가 건 모드면 None
+        by: Option<String>,
+        modes: String,
+    },
+    Kick {
+        server_id: ServerId,
+        channel: ChannelId,
+        /// 강퇴당한 닉
+        nick: String,
+        /// 강퇴한 닉
+        by: String,
         reason: Option<String>,
     },
     Quit {
@@ -289,10 +423,26 @@ pub enum UIEventPayload {
         server_id: ServerId,
         channel: ChannelId,
         topic: Option<String>,
+        /// 토픽을 바꾼 닉 (TOPIC 커맨드). None이면 입장/조회 시 받은 현재 토픽(332/331)
+        changed_by: Option<String>,
+    },
+    /// 채널 유저 목록 전체 (NAMES 응답). 권한 접두사는 제거된 닉 목록 — UI는 목록을 교체한다
+    Names {
+        server_id: ServerId,
+        channel: ChannelId,
+        users: Vec<String>,
     },
     Error {
         server_id: ServerId,
+        /// 실패한 요청의 대상(채널/닉). 서버 ERROR처럼 대상이 없으면 None
+        target: Option<String>,
         message: String,
+    },
+    /// 사용자가 요청한 채널 입장 실패. 코어는 저장된 채널을 이미 지웠다 — UI도 채널을 지운다
+    JoinFailed {
+        server_id: ServerId,
+        channel: ChannelId,
+        reason: String,
     },
 }
 

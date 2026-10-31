@@ -1,20 +1,23 @@
 #[derive(Debug, PartialEq)]
 pub enum CtcpCommand {
+    /// `/me` 액션. 응답 대상이 아니라 메시지로 표시한다
+    Action(String),
     Version,
     Ping(String),
     Time,
     Unknown(String),
 }
 
-pub fn parse_ctcp(message: &str) -> Option<CtcpCommand> {
-    if !message.starts_with('\x01') || !message.ends_with('\x01') {
-        return None;
-    }
+/// `\x01...\x01`로 감싼 CTCP 메시지면 안쪽 내용을 돌려준다 (비어 있으면 None).
+pub fn ctcp_body(message: &str) -> Option<&str> {
+    message
+        .strip_prefix('\x01')?
+        .strip_suffix('\x01')
+        .filter(|inner| !inner.is_empty())
+}
 
-    let inner = &message[1..message.len() - 1];
-    if inner.is_empty() {
-        return None;
-    }
+pub fn parse_ctcp(message: &str) -> Option<CtcpCommand> {
+    let inner = ctcp_body(message)?;
 
     let mut parts = inner.splitn(2, ' ');
 
@@ -22,6 +25,7 @@ pub fn parse_ctcp(message: &str) -> Option<CtcpCommand> {
     let arg = parts.next().unwrap_or("").to_string();
 
     match cmd.as_str() {
+        "ACTION" => Some(CtcpCommand::Action(arg)),
         "VERSION" => Some(CtcpCommand::Version),
         "PING" => Some(CtcpCommand::Ping(arg)),
         "TIME" => Some(CtcpCommand::Time),
@@ -65,9 +69,23 @@ mod tests {
         assert_eq!(parse_ctcp("\x01VERSION"), None);
         assert_eq!(parse_ctcp("VERSION\x01"), None);
         assert_eq!(parse_ctcp("\x01\x01"), None);
+        // 이전: 시작/끝 판정이 같은 \x01을 보고 범위가 뒤집혀 패닉
+        assert_eq!(parse_ctcp("\x01"), None);
         assert_eq!(
             parse_ctcp("\x01 \x01"),
             Some(CtcpCommand::Unknown(" ".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_ctcp_action() {
+        assert_eq!(
+            parse_ctcp("\x01ACTION waves hello\x01"),
+            Some(CtcpCommand::Action("waves hello".to_string()))
+        );
+        assert_eq!(
+            parse_ctcp("\x01ACTION\x01"),
+            Some(CtcpCommand::Action("".to_string()))
         );
     }
 

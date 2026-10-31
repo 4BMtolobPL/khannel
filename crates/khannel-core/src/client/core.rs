@@ -1,4 +1,4 @@
-use crate::client::ctcp::{CtcpCommand, parse_ctcp};
+use crate::client::ctcp::{CtcpCommand, ctcp_body, parse_ctcp};
 use crate::client::event::EventSender;
 use crate::client::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
@@ -10,6 +10,8 @@ use futures::prelude::*;
 use irc::client::ClientStream;
 use irc::client::prelude::*;
 use irc::error;
+use irc::proto::mode::ModeType;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -125,15 +127,14 @@ impl ServerActor {
         mut stream: ClientStream,
         mut rx: UnboundedReceiver<ServerCommand>,
     ) -> SessionOutcome {
-        // 등록 단계에서 닉이 거부될 때 시도한 대체 닉 수 (`alt_nick`)
-        let mut alt_attempts = 0;
+        let mut ctx = SessionCtx::default();
         loop {
             tokio::select! {
                 // IRC 서버에서 오는 메시지
                 result = stream.next() => {
                     match result {
                         Some(Ok(message)) => {
-                            let _ = self.handle_message(&client, message);
+                            let _ = self.handle_message(&client, &mut ctx, message);
                         }
                         Some(Err(error::Error::NoUsableNick)) => {
                             // 서버가 닉네임을 거부(433 ERR_NICKNAMEINUSE / 432 ERR_ERRONEOUSNICKNAME)했고
@@ -146,9 +147,9 @@ impl ServerActor {
                             // 쓰지 않고, 등록 단계에서만 직접 보낸다.
                             if self.server.status() == ServerStatus::Registering {
                                 let nickname = self.server.config().nickname().to_string();
-                                if alt_attempts < MAX_ALT_NICKS {
-                                    alt_attempts += 1;
-                                    let alt = alt_nick(&nickname, alt_attempts);
+                                if ctx.alt_attempts < MAX_ALT_NICKS {
+                                    ctx.alt_attempts += 1;
+                                    let alt = alt_nick(&nickname, ctx.alt_attempts);
                                     info!(event = "alt_nick", nickname = %nickname, alt = %alt);
                                     if let Err(e) = client.send(Command::NICK(alt)) {
                                         error!("Failed to send alt nick: {e}");
@@ -197,7 +198,7 @@ impl ServerActor {
                             drain_after_quit(&mut stream).await;
                             return SessionOutcome::Quit
                         }
-                        Some(cmd) => self.handle_server_command(&client, cmd),
+                        Some(cmd) => self.handle_server_command(&client, &mut ctx, cmd),
                         // 모든 sender가 사라진 경우 (runtime이 정리됨): 수신할 커맨드는 없으므로 세션 종료
                         None => {
                             warn!(event = "command_channel_closed", "All command senders dropped, closing session");
@@ -210,13 +211,14 @@ impl ServerActor {
     }
 
     #[instrument(skip_all, fields(server_id = %self.server_id))]
-    fn handle_server_command(&self, client: &Client, cmd: ServerCommand) {
+    fn handle_server_command(&self, client: &Client, ctx: &mut SessionCtx, cmd: ServerCommand) {
         match cmd {
             ServerCommand::Join(ch) => {
                 info!(event = "join", channel = %ch);
                 if let Err(e) = client.send_join(&ch) {
                     error!("Failed to send join message: {e}");
                 }
+                ctx.pending_joins.insert(ch.to_lowercase());
             }
             ServerCommand::Privmsg { target, message } => {
                 if let Err(e) = client.send_privmsg(&target, &message) {
@@ -224,7 +226,7 @@ impl ServerActor {
                 }
 
                 // 자신이 보낸 PRIVMSG를 UI에 반영하기 위해 에코 메시지로 다시 처리
-                self.send_echo_message(client, &target, &message);
+                self.send_echo_message(client, ctx, &target, &message);
             }
             ServerCommand::Part { channel_name } => {
                 if let Err(e) = client.send_part(&channel_name) {
@@ -248,12 +250,18 @@ impl ServerActor {
         }
     }
 
-    fn send_echo_message(&self, client: &Client, target: &str, message: &str) {
+    fn send_echo_message(
+        &self,
+        client: &Client,
+        ctx: &mut SessionCtx,
+        target: &str,
+        message: &str,
+    ) {
         let current_nick = self.current_nick();
 
         match Message::with_tags(None, Some(&current_nick), "PRIVMSG", vec![target, message]) {
             Ok(msg) => {
-                if let Err(e) = self.handle_message(client, msg) {
+                if let Err(e) = self.handle_message(client, ctx, msg) {
                     error!("Failed to handle echo message: {e}");
                 }
             }
@@ -288,21 +296,58 @@ impl ServerActor {
     }
 
     #[instrument(skip_all, fields(server_id = %self.server_id))]
-    fn handle_message(&self, client: &Client, message: Message) -> anyhow::Result<()> {
+    fn handle_message(
+        &self,
+        client: &Client,
+        ctx: &mut SessionCtx,
+        message: Message,
+    ) -> anyhow::Result<()> {
         let source_nickname = message.source_nickname().unwrap_or("").to_string();
 
         match message.command {
-            Command::PRIVMSG(target, content) => {
-                if let Some(ctcp) = parse_ctcp(&content) {
+            Command::PRIVMSG(target, content) => match parse_ctcp(&content) {
+                Some(CtcpCommand::Action(action)) => {
+                    // `/me` — CTCP지만 응답하지 않고 대화 메시지로 표시한다
+                    emit_ui_event(&self.ui_sink)
+                        .action_message(self.server_id, target, source_nickname, action)
+                        .emit();
+                }
+                Some(ctcp) => {
                     info!(target = %target, content = %content, "Received CTCP message");
                     handle_ctcp(client, &source_nickname, ctcp);
-                } else {
+                }
+                None => {
                     emit_ui_event(&self.ui_sink)
                         .user_message(self.server_id, target, source_nickname, content)
                         .emit();
                 }
+            },
+            Command::NOTICE(target, content) => {
+                // 서버 발신(접두사가 서버명이거나 없음)이면 닉이 없다
+                let nick = Some(source_nickname).filter(|nick| !nick.is_empty());
+                if let Some(body) = ctcp_body(&content) {
+                    // NOTICE의 CTCP는 내가 보낸 CTCP 요청의 응답 — 표시만 하고 절대 응답하지 않는다
+                    info!(target = %target, content = %content, "Received CTCP reply");
+                    emit_system_message(
+                        &self.ui_sink,
+                        self.server_id,
+                        &format!("CTCP reply from {}: {body}", nick.as_deref().unwrap_or("*")),
+                    );
+                } else {
+                    emit_ui_event(&self.ui_sink)
+                        .notice(self.server_id, target, nick, content)
+                        .emit();
+                }
             }
             Command::JOIN(chanlist, _chankey, _real_name) => {
+                // 내 입장이 확인됐으면 더 이상 실패를 기다리지 않는다
+                if self
+                    .server
+                    .current_nickname()
+                    .eq_ignore_ascii_case(&source_nickname)
+                {
+                    ctx.pending_joins.remove(&chanlist.to_lowercase());
+                }
                 emit_ui_event(&self.ui_sink)
                     .join(self.server_id, chanlist, source_nickname)
                     .emit();
@@ -310,6 +355,60 @@ impl ServerActor {
             Command::PART(chanlist, comment) => {
                 emit_ui_event(&self.ui_sink)
                     .part(self.server_id, chanlist, source_nickname, comment)
+                    .emit();
+            }
+            Command::ChannelMODE(channel, modes) => {
+                // 서버가 건 모드(입장 직후 +nt 등)는 발신자 닉이 없다
+                if !modes.is_empty() {
+                    let by = Some(source_nickname).filter(|nick| !nick.is_empty());
+                    emit_ui_event(&self.ui_sink)
+                        .channel_mode(self.server_id, channel, by, format_modes(&modes))
+                        .emit();
+                }
+            }
+            Command::UserMODE(target, modes) => {
+                // 내 유저 모드 (접속 직후 +i 등) — 서버 버퍼에 알린다
+                if !modes.is_empty() {
+                    emit_system_message(
+                        &self.ui_sink,
+                        self.server_id,
+                        &format!("Mode {target} {}", format_modes(&modes)),
+                    );
+                }
+            }
+            Command::INVITE(invited, channel) => {
+                let by = Some(source_nickname)
+                    .filter(|nick| !nick.is_empty())
+                    .unwrap_or_else(|| "Server".to_string());
+                // invite-notify가 켜진 서버에선 다른 사람이 초대된 것도 알려준다
+                let message = if self
+                    .server
+                    .current_nickname()
+                    .eq_ignore_ascii_case(&invited)
+                {
+                    format!("{by} invited you to {channel}")
+                } else {
+                    format!("{by} invited {invited} to {channel}")
+                };
+                emit_system_message(&self.ui_sink, self.server_id, &message);
+            }
+            Command::Response(Response::RPL_ISUPPORT, args) => {
+                // args: [내 닉, "TOKEN=값", ..., "are supported by this server"] — 여러 줄로 온다
+                if let Some(symbols) = args
+                    .iter()
+                    .skip(1)
+                    .find_map(|token| parse_isupport_prefix(token))
+                {
+                    debug!(event = "isupport_prefix", symbols = %symbols);
+                    ctx.prefix_symbols = Some(symbols);
+                }
+            }
+            Command::KICK(channel, kicked, comment) => {
+                // 발신자가 강퇴한 사람. 내가 강퇴돼도 저장된 채널 목록은 그대로 둔다
+                // → 재접속 시 자동으로 다시 입장한다 (irssi/weechat 기본 동작과 같음)
+                let comment = comment.filter(|comment| !comment.is_empty());
+                emit_ui_event(&self.ui_sink)
+                    .kick(self.server_id, channel, kicked, source_nickname, comment)
                     .emit();
             }
             Command::QUIT(comment) => {
@@ -348,14 +447,37 @@ impl ServerActor {
                     .emit();
             }
             Command::TOPIC(channel, topic) => {
+                // 누군가 토픽을 바꾼 경우. 빈 토픽은 토픽 삭제
+                let topic = topic.filter(|topic| !topic.is_empty());
                 emit_ui_event(&self.ui_sink)
-                    .topic(self.server_id, channel, topic)
+                    .topic(self.server_id, channel, topic, Some(source_nickname))
                     .emit();
+            }
+            Command::Response(Response::RPL_TOPIC, args) => {
+                // 입장 시(또는 TOPIC 조회 시) 현재 토픽. args: [내 닉, 채널, 토픽]
+                if let [_, channel, topic, ..] = args.as_slice() {
+                    let topic = Some(topic.clone()).filter(|topic| !topic.is_empty());
+                    emit_ui_event(&self.ui_sink)
+                        .topic(self.server_id, channel.clone(), topic, None)
+                        .emit();
+                }
+            }
+            Command::Response(Response::RPL_NOTOPIC, args) => {
+                // args: [내 닉, 채널, "No topic is set"]
+                if let Some(channel) = args.get(1) {
+                    emit_ui_event(&self.ui_sink)
+                        .topic(self.server_id, channel.clone(), None, None)
+                        .emit();
+                }
+            }
+            Command::Response(Response::RPL_TOPICWHOTIME, args) => {
+                // args: [내 닉, 채널, 설정자, 설정 시각(unix)] — 아직 UI에 표시하지 않는다
+                trace!(args = ?args, "Topic set by");
             }
             Command::ERROR(message) => {
                 warn!(message = %message, "Server command error");
                 emit_ui_event(&self.ui_sink)
-                    .error(self.server_id, message)
+                    .error(self.server_id, None, message)
                     .emit();
             }
             Command::Response(Response::RPL_WELCOME, args) => {
@@ -379,10 +501,14 @@ impl ServerActor {
                     }
                 }
 
-                // 기존 채널이 존재하면 연결
+                // 기존 채널이 존재하면 연결. 커맨드 채널(ServerCommand::Join)을 거치지 않고 바로
+                // 보낸다 — 사용자 요청 입장(pending_joins)과 구분해, 자동 재입장이 실패해도
+                // 저장된 채널을 지우지 않기 위함
                 for (channel_name, _channel_state) in self.server.channels() {
-                    self.server
-                        .send_command(ServerCommand::Join(channel_name))?;
+                    info!(event = "auto_join", channel = %channel_name);
+                    if let Err(e) = client.send_join(&channel_name) {
+                        error!("Failed to send join message: {e}");
+                    }
                 }
 
                 emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Connected);
@@ -390,11 +516,72 @@ impl ServerActor {
                 // Optional: Alert system message
                 emit_system_message(&self.ui_sink, self.server_id, "서버에 연결되었습니다.");
             }
+            Command::Response(Response::RPL_NAMREPLY, args) => {
+                // args: [내 닉, 채널 타입(= * @), 채널, "닉 @닉 +닉 ..."]
+                // 한 채널의 목록이 여러 줄로 나뉘어 오므로 366까지 모은다
+                if let [_, .., channel, names] = args.as_slice() {
+                    let symbols = ctx
+                        .prefix_symbols
+                        .as_deref()
+                        .unwrap_or(DEFAULT_PREFIX_SYMBOLS);
+                    ctx.pending_names
+                        .entry(channel.to_lowercase())
+                        .or_default()
+                        .extend(
+                            names
+                                .split_whitespace()
+                                .map(|nick| strip_nick_prefix(nick, symbols))
+                                .filter(|nick| !nick.is_empty())
+                                .map(str::to_string),
+                        );
+                }
+            }
+            Command::Response(Response::RPL_ENDOFNAMES, args) => {
+                // args: [내 닉, 채널, "End of /NAMES list."]
+                // 모은 목록으로 UI의 유저 목록을 통째로 교체한다 (재요청/재접속 시 중복 방지)
+                if let Some(channel) = args.get(1) {
+                    let users = ctx
+                        .pending_names
+                        .remove(&channel.to_lowercase())
+                        .unwrap_or_default();
+                    emit_ui_event(&self.ui_sink)
+                        .names(self.server_id, channel.clone(), users)
+                        .emit();
+                }
+            }
             Command::Response(Response::ERR_NICKNAMEINUSE, _) => {
                 // 닉네임이 중복된 경우
                 // alt nick으로 재시도
                 // 그래도 안될경우 오류 던지기
                 trace!("닉네임 중복");
+            }
+            Command::Response(Response::RPL_MOTDSTART, args) => {
+                // 이전 MOTD가 끝나지 않았어도 새로 시작한다
+                ctx.motd = Some(args.last().into_iter().cloned().collect());
+            }
+            Command::Response(Response::RPL_MOTD, args) => {
+                // 줄마다 붙는 "- " 접두사는 뗀다. 375 없이 와도 모은다
+                if let Some(line) = args.last() {
+                    let line = line.strip_prefix("- ").unwrap_or(line);
+                    ctx.motd.get_or_insert_with(Vec::new).push(line.to_string());
+                }
+            }
+            Command::Response(Response::RPL_ENDOFMOTD, _) => {
+                // 수십 줄짜리 MOTD가 서버 버퍼를 덮지 않도록 메시지 하나로 보낸다
+                if let Some(lines) = ctx.motd.take().filter(|lines| !lines.is_empty()) {
+                    emit_system_message(&self.ui_sink, self.server_id, &lines.join("\n"));
+                }
+            }
+            Command::Response(response, args) if is_info_numeric(response) => {
+                if let Some(text) = info_text(response, &args) {
+                    emit_system_message(&self.ui_sink, self.server_id, &text);
+                }
+            }
+            Command::Response(response, args) if is_join_error(response) => {
+                self.handle_join_error(ctx, &args);
+            }
+            Command::Response(response, args) if is_target_error(response) => {
+                self.emit_numeric_error(&args);
             }
             _ => {
                 // TODO: Command 다른것도 추가하기
@@ -403,6 +590,43 @@ impl ServerActor {
         }
 
         Ok(())
+    }
+
+    /// JOIN 실패 numeric. args: [내 닉, 채널, 사유]
+    ///
+    /// 이번 세션에 사용자가 요청한 입장이면 저장된 채널을 지운다 — 남겨 두면 재접속할 때마다
+    /// 자동 재입장이 같은 이유로 실패한다. 자동 재입장(001 이후)이 실패한 경우는 밴/초대 전용
+    /// 같은 일시적 사유일 수 있으므로 알리기만 하고 채널은 유지한다.
+    fn handle_join_error(&self, ctx: &mut SessionCtx, args: &[String]) {
+        let [_, channel, .., reason] = args else {
+            self.emit_numeric_error(args);
+            return;
+        };
+        if !ctx.pending_joins.remove(&channel.to_lowercase()) {
+            self.emit_numeric_error(args);
+            return;
+        }
+
+        warn!(event = "join_failed", channel = %channel, reason = %reason);
+        if self.server.remove_channel(channel).is_some() {
+            self.persist();
+        }
+        emit_ui_event(&self.ui_sink)
+            .join_failed(self.server_id, channel.clone(), reason.clone())
+            .emit();
+    }
+
+    /// 대상(채널/닉)이 있는 에러 numeric을 UI 에러로 보낸다. args: [내 닉, 대상, 사유]
+    fn emit_numeric_error(&self, args: &[String]) {
+        let (target, reason) = match args {
+            [_, target, .., reason] => (Some(target.clone()), reason.clone()),
+            [.., reason] => (None, reason.clone()),
+            [] => return,
+        };
+        debug!(event = "numeric_error", target = ?target, reason = %reason);
+        emit_ui_event(&self.ui_sink)
+            .error(self.server_id, target, reason)
+            .emit();
     }
 
     #[instrument(skip_all, fields(server_id = %self.server_id))]
@@ -431,6 +655,124 @@ enum SessionOutcome {
     Closed,
     /// 세션을 계속할 수 없는 실패 (예: 등록 단계 닉네임 거부). 사유는 Failed 상태에 기록된다.
     Failed(String),
+}
+
+/// 한 세션(연결) 동안만 유지되는 액터 지역 상태. 재접속하면 새로 만든다.
+#[derive(Default)]
+struct SessionCtx {
+    /// 등록 단계에서 닉이 거부될 때 시도한 대체 닉 수 (`alt_nick`)
+    alt_attempts: usize,
+    /// 366(RPL_ENDOFNAMES)까지 모으는 채널별 NAMES(353) 응답. 키는 소문자 채널명
+    pending_names: HashMap<String, Vec<String>>,
+    /// 사용자가 요청했고 아직 JOIN 응답이 오지 않은 채널 (소문자). 자동 재입장은 포함하지 않는다
+    pending_joins: HashSet<String>,
+    /// 376(RPL_ENDOFMOTD)까지 모으는 MOTD 줄 (375 머리줄 포함)
+    motd: Option<Vec<String>>,
+    /// 005 PREFIX로 받은 채널 권한 접두사 기호 (예: `@+`). 받기 전엔 None
+    prefix_symbols: Option<String>,
+}
+
+/// 서버 버퍼에 그대로 보여줄 접속 정보 numeric (MOTD는 따로 모은다)
+fn is_info_numeric(response: Response) -> bool {
+    matches!(
+        response,
+        Response::RPL_YOURHOST
+            | Response::RPL_CREATED
+            | Response::RPL_LUSERCLIENT
+            | Response::RPL_LUSEROP
+            | Response::RPL_LUSERUNKNOWN
+            | Response::RPL_LUSERCHANNELS
+            | Response::RPL_LUSERME
+            | Response::RPL_LOCALUSERS
+            | Response::RPL_GLOBALUSERS
+            | Response::ERR_NOMOTD
+    )
+}
+
+/// 접속 정보 numeric의 표시 문구. 첫 인자(내 닉)는 뺀다.
+fn info_text(response: Response, args: &[String]) -> Option<String> {
+    match response {
+        // args: [내 닉, 개수, "operator(s) online"] → 개수와 설명을 합친다
+        Response::RPL_LUSEROP | Response::RPL_LUSERUNKNOWN | Response::RPL_LUSERCHANNELS => {
+            Some(args.get(1..)?.join(" ")).filter(|text| !text.is_empty())
+        }
+        // 그 외는 마지막 인자가 사람이 읽는 문장이다
+        // (265/266은 앞에 숫자 인자가 더 붙지만 문장에 이미 들어 있다)
+        _ => args.get(1..)?.last().cloned(),
+    }
+}
+
+/// 채널 입장 실패 numeric
+fn is_join_error(response: Response) -> bool {
+    matches!(
+        response,
+        Response::ERR_NOSUCHCHANNEL
+            | Response::ERR_TOOMANYCHANNELS
+            | Response::ERR_CHANNELISFULL
+            | Response::ERR_INVITEONLYCHAN
+            | Response::ERR_BANNEDFROMCHAN
+            | Response::ERR_BADCHANNELKEY
+            | Response::ERR_BADCHANMASK
+            // RFC상 ERR_NOCHANMODES지만 Libera 등에서는 "등록된 닉만 입장 가능(+r)"
+            | Response::ERR_NOCHANMODES
+    )
+}
+
+/// 대상(채널/닉)에 대한 요청이 실패했음을 알리는 numeric
+fn is_target_error(response: Response) -> bool {
+    matches!(
+        response,
+        Response::ERR_NOSUCHNICK
+            | Response::ERR_CANNOTSENDTOCHAN
+            | Response::ERR_USERNOTINCHANNEL
+            | Response::ERR_NOTONCHANNEL
+            | Response::ERR_CHANOPRIVSNEEDED
+    )
+}
+
+/// 005 PREFIX를 받기 전에 쓰는 채널 권한 접두사 (흔히 쓰이는 것 전부)
+const DEFAULT_PREFIX_SYMBOLS: &str = "~&@%+";
+
+/// NAMES 응답의 닉 앞 채널 권한 접두사(`symbols` 중 하나)를 뗀다. multi-prefix(`@+nick`)도 처리.
+fn strip_nick_prefix<'a>(nick: &'a str, symbols: &str) -> &'a str {
+    nick.trim_start_matches(|c| symbols.contains(c))
+}
+
+/// 005(RPL_ISUPPORT) 토큰 중 `PREFIX=(ov)@+`의 접두사 기호(`@+`)를 꺼낸다.
+/// `PREFIX=`(값 없음)는 권한 접두사가 없다는 뜻이라 빈 문자열이다.
+fn parse_isupport_prefix(token: &str) -> Option<String> {
+    let value = token.strip_prefix("PREFIX=")?;
+    if value.is_empty() {
+        return Some(String::new());
+    }
+    let (_modes, symbols) = value.strip_prefix('(')?.split_once(')')?;
+    Some(symbols.to_string())
+}
+
+/// MODE 변경을 `+nt`, `+o-v nick1 nick2` 형태로 (같은 부호는 묶고, 모드 문자 다음에 인자들)
+fn format_modes<T: ModeType>(modes: &[Mode<T>]) -> String {
+    let mut flags = String::new();
+    let mut sign = None;
+    for flag in modes.iter().map(Mode::flag) {
+        match flag.chars().next() {
+            Some(s @ ('+' | '-')) => {
+                if sign != Some(s) {
+                    flags.push(s);
+                    sign = Some(s);
+                }
+                flags.push_str(&flag[1..]);
+            }
+            _ => flags.push_str(&flag),
+        }
+    }
+    modes
+        .iter()
+        .filter_map(Mode::arg)
+        .fold(flags, |mut acc, arg| {
+            acc.push(' ');
+            acc.push_str(arg);
+            acc
+        })
 }
 
 /// 등록 단계에서 닉이 거부될 때 시도할 대체 닉 수 (`닉_`, `닉__`, `닉___`)
@@ -488,7 +830,8 @@ fn get_ctcp_reply(ctcp: &CtcpCommand) -> Option<String> {
             let now = chrono::Local::now().to_rfc2822();
             Some(format!("\x01TIME {}\x01", now))
         }
-        CtcpCommand::Unknown(_) => None,
+        // ACTION은 handle_message에서 메시지로 처리한다
+        CtcpCommand::Action(_) | CtcpCommand::Unknown(_) => None,
     }
 }
 
@@ -528,6 +871,80 @@ mod tests {
     fn test_get_ctcp_reply_unknown() {
         let reply = get_ctcp_reply(&CtcpCommand::Unknown("FOO".to_string()));
         assert_eq!(reply, None);
+    }
+
+    fn args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn test_info_text() {
+        assert_eq!(
+            info_text(
+                Response::RPL_LUSERCLIENT,
+                &args(&["nick", "There are 5 users"])
+            )
+            .as_deref(),
+            Some("There are 5 users")
+        );
+        assert_eq!(
+            info_text(
+                Response::RPL_LUSEROP,
+                &args(&["nick", "3", "operator(s) online"])
+            )
+            .as_deref(),
+            Some("3 operator(s) online")
+        );
+        assert_eq!(
+            info_text(
+                Response::RPL_LOCALUSERS,
+                &args(&["nick", "10", "20", "Current local users 10, max 20"])
+            )
+            .as_deref(),
+            Some("Current local users 10, max 20")
+        );
+        // 내 닉만 있고 내용이 없으면 표시하지 않는다
+        assert_eq!(info_text(Response::RPL_LUSEROP, &args(&["nick"])), None);
+        assert_eq!(info_text(Response::RPL_CREATED, &args(&["nick"])), None);
+    }
+
+    #[test]
+    fn test_strip_nick_prefix() {
+        let symbols = DEFAULT_PREFIX_SYMBOLS;
+        assert_eq!(strip_nick_prefix("nick", symbols), "nick");
+        assert_eq!(strip_nick_prefix("@op", symbols), "op");
+        assert_eq!(strip_nick_prefix("+voice", symbols), "voice");
+        assert_eq!(strip_nick_prefix("~owner", symbols), "owner");
+        assert_eq!(strip_nick_prefix("@+both", symbols), "both");
+        assert_eq!(strip_nick_prefix("@", symbols), "");
+        // 005 PREFIX=(ov)@+ 서버에선 ~/&로 시작하는 닉을 그대로 둔다
+        assert_eq!(strip_nick_prefix("~tilde", "@+"), "~tilde");
+        assert_eq!(strip_nick_prefix("@op", ""), "@op");
+    }
+
+    #[test]
+    fn test_parse_isupport_prefix() {
+        assert_eq!(
+            parse_isupport_prefix("PREFIX=(qaohv)~&@%+").as_deref(),
+            Some("~&@%+")
+        );
+        assert_eq!(
+            parse_isupport_prefix("PREFIX=(ov)@+").as_deref(),
+            Some("@+")
+        );
+        assert_eq!(parse_isupport_prefix("PREFIX=").as_deref(), Some(""));
+        assert_eq!(parse_isupport_prefix("CHANTYPES=#"), None);
+        assert_eq!(parse_isupport_prefix("PREFIX=garbage"), None);
+    }
+
+    #[test]
+    fn test_format_modes() {
+        let modes = Mode::as_channel_modes(&["+o-v", "lee", "bob"]).unwrap();
+        assert_eq!(format_modes(&modes), "+o-v lee bob");
+        let modes = Mode::as_channel_modes(&["+nt"]).unwrap();
+        assert_eq!(format_modes(&modes), "+nt");
+        let modes = Mode::as_channel_modes(&["+o-v+b", "a", "b", "c!*@*"]).unwrap();
+        assert_eq!(format_modes(&modes), "+o-v+b a b c!*@*");
     }
 }
 
@@ -1095,6 +1512,604 @@ mod quit_tests {
         h.connect();
         let message = next_system_message(&mut h.rx).await;
         assert!(message.contains("'nick_'"), "{message}");
+    }
+
+    // ==================== NAMES ====================
+
+    /// 001로 등록을 끝내 주고, JOIN을 받으면 `replies`를 그대로 돌려주는 mock IRC 서버.
+    async fn spawn_join_reply_mock(replies: &'static str) -> u16 {
+        spawn_logging_join_reply_mock(replies).await.0
+    }
+
+    /// [`spawn_join_reply_mock`]과 같고, 클라이언트가 보낸 줄을 기록해 함께 돌려준다.
+    async fn spawn_logging_join_reply_mock(
+        replies: &'static str,
+    ) -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                log.lock().unwrap().push(line.clone());
+                if line.starts_with("USER") {
+                    let _ = write.write_all(b":mock 001 nick :Welcome\r\n").await;
+                }
+                if line.starts_with("JOIN") {
+                    let _ = write.write_all(replies.as_bytes()).await;
+                }
+            }
+        });
+
+        (port, sent)
+    }
+
+    /// 표식 메시지를 보내고 mock 서버에 도착할 때까지 기다린 뒤, 그때까지 받은 줄을 돌려준다.
+    /// 송신은 순서대로 나가므로 그 전에 생긴 응답(중복 포함)은 모두 표식보다 먼저 도착해 있다.
+    async fn lines_until_marker(
+        h: &NickHarness,
+        sent: &std::sync::Mutex<Vec<String>>,
+    ) -> Vec<String> {
+        h.api
+            .send_message(h.server_id, "#marker", "marker")
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let lines = sent.lock().unwrap().clone();
+                if lines.iter().any(|line| line.starts_with("PRIVMSG #marker")) {
+                    return lines;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("marker never reached the server")
+    }
+
+    /// 여러 줄의 353을 366까지 모아, 접두사를 뗀 전체 목록으로 한 번에 보낸다.
+    #[tokio::test]
+    async fn names_reply_is_collected_until_end_of_names() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 353 nick = #Test :nick @op\r\n",
+            ":mock 353 nick = #Test :+voice ~owner @+both\r\n",
+            ":mock 366 nick #Test :End of /NAMES list.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#test").unwrap();
+
+        let (channel, users) = timeout(Duration::from_secs(5), async {
+            loop {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Names {
+                        channel,
+                        users,
+                        ..
+                    })) => return (channel, users),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no names event");
+
+        assert_eq!(channel, "#Test");
+        assert_eq!(users, ["nick", "op", "voice", "owner", "both"]);
+    }
+
+    // ==================== TOPIC ====================
+
+    /// 다음 Topic UI 이벤트를 기다린다 (channel, topic, changed_by)
+    async fn next_topic_event(
+        rx: &mut UnboundedReceiver<UiEvent>,
+    ) -> (String, Option<String>, Option<String>) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Topic {
+                        channel,
+                        topic,
+                        changed_by,
+                        ..
+                    })) => return (channel, topic, changed_by),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no topic event")
+    }
+
+    /// 입장 시 받은 현재 토픽(332/331)은 변경자 없이, TOPIC 커맨드는 변경자와 함께 보낸다.
+    #[tokio::test]
+    async fn topic_numerics_and_topic_change_are_distinguished() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 332 nick #a :hello world\r\n",
+            ":mock 333 nick #a op 1700000000\r\n",
+            ":mock 331 nick #b :No topic is set\r\n",
+            ":op!u@mock TOPIC #a :new topic\r\n",
+            ":op!u@mock TOPIC #a :\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        assert_eq!(
+            next_topic_event(&mut h.rx).await,
+            ("#a".into(), Some("hello world".into()), None)
+        );
+        assert_eq!(next_topic_event(&mut h.rx).await, ("#b".into(), None, None));
+        assert_eq!(
+            next_topic_event(&mut h.rx).await,
+            ("#a".into(), Some("new topic".into()), Some("op".into()))
+        );
+        assert_eq!(
+            next_topic_event(&mut h.rx).await,
+            ("#a".into(), None, Some("op".into()))
+        );
+    }
+
+    // ==================== NOTICE ====================
+
+    /// NOTICE는 대상/보낸 닉(서버면 None)과 함께 보내고, NOTICE 안의 CTCP 응답은
+    /// 서버 버퍼 시스템 메시지로만 표시한다.
+    #[tokio::test]
+    async fn notices_are_forwarded_and_ctcp_replies_shown() {
+        let port = spawn_join_reply_mock(concat!(
+            ":irc.mock.net NOTICE * :*** server notice\r\n",
+            ":NickServ!s@services NOTICE nick :please identify\r\n",
+            ":op!u@mock NOTICE #a :channel notice\r\n",
+            ":bob!u@mock NOTICE nick :\x01VERSION bobirc 1.0\x01\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut notices = Vec::new();
+        let ctcp = timeout(Duration::from_secs(5), async {
+            loop {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Notice {
+                        target,
+                        nick,
+                        content,
+                        ..
+                    })) => notices.push((target, nick, content)),
+                    Some(UiEvent::SystemMessage(p)) if p.message.starts_with("CTCP") => {
+                        return p.message;
+                    }
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no ctcp reply message");
+
+        assert_eq!(
+            notices,
+            [
+                ("*".into(), None, "*** server notice".into()),
+                (
+                    "nick".into(),
+                    Some("NickServ".into()),
+                    "please identify".into()
+                ),
+                ("#a".into(), Some("op".into()), "channel notice".into()),
+            ]
+        );
+        assert_eq!(ctcp, "CTCP reply from bob: VERSION bobirc 1.0");
+    }
+
+    // ==================== CTCP ACTION ====================
+
+    /// `/me`(CTCP ACTION)는 응답하지 않고 action 메시지로 보낸다. 일반 메시지는 action=false.
+    #[tokio::test]
+    async fn ctcp_action_is_forwarded_as_action_message() {
+        let port = spawn_join_reply_mock(concat!(
+            ":bob!u@mock PRIVMSG #a :\x01ACTION waves\x01\r\n",
+            ":bob!u@mock PRIVMSG #a :hello\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut messages = Vec::new();
+        timeout(Duration::from_secs(5), async {
+            while messages.len() < 2 {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::UserMessage {
+                        nick,
+                        content,
+                        action,
+                        ..
+                    })) => messages.push((nick, content, action)),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no user messages");
+
+        assert_eq!(
+            messages,
+            [
+                ("bob".into(), "waves".into(), true),
+                ("bob".into(), "hello".into(), false),
+            ]
+        );
+    }
+
+    // ==================== KICK ====================
+
+    /// KICK은 강퇴당한 닉/강퇴한 닉/사유로 보내고, 내가 강퇴돼도 저장된 채널은 유지한다
+    /// (재접속 시 자동 재입장).
+    #[tokio::test]
+    async fn kick_is_forwarded_and_keeps_saved_channel() {
+        let port = spawn_join_reply_mock(concat!(
+            ":op!u@mock KICK #a lee :spam\r\n",
+            ":op!u@mock KICK #a nick\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut kicks = Vec::new();
+        timeout(Duration::from_secs(5), async {
+            while kicks.len() < 2 {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::Kick {
+                        channel,
+                        nick,
+                        by,
+                        reason,
+                        ..
+                    })) => kicks.push((channel, nick, by, reason)),
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no kick events");
+
+        assert_eq!(
+            kicks,
+            [
+                ("#a".into(), "lee".into(), "op".into(), Some("spam".into())),
+                ("#a".into(), "nick".into(), "op".into(), None),
+            ]
+        );
+        assert!(h.server().contains_channel("#a"));
+    }
+
+    // ==================== 에러 numeric ====================
+
+    /// 001로 등록을 끝내 주고, 모든 JOIN을 474(밴)로 거부하는 mock IRC 서버.
+    async fn spawn_join_reject_mock() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.starts_with("USER") {
+                    let _ = write.write_all(b":mock 001 nick :Welcome\r\n").await;
+                }
+                if let Some(channel) = line.strip_prefix("JOIN ") {
+                    let reply = format!(":mock 474 nick {channel} :Cannot join channel (+b)\r\n");
+                    let _ = write.write_all(reply.as_bytes()).await;
+                }
+            }
+        });
+
+        port
+    }
+
+    /// 다음 JoinFailed 또는 Error UI 이벤트를 기다린다
+    async fn next_error_event(
+        rx: &mut UnboundedReceiver<UiEvent>,
+    ) -> crate::client::event::UIEventPayload {
+        use crate::client::event::UIEventPayload as P;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(UiEvent::Ui(payload @ (P::JoinFailed { .. } | P::Error { .. }))) => {
+                        return payload;
+                    }
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no error event")
+    }
+
+    /// 사용자가 요청한 입장이 실패하면 저장된 채널을 지우고 JoinFailed를 보낸다.
+    #[tokio::test]
+    async fn requested_join_failure_removes_saved_channel() {
+        use crate::client::event::UIEventPayload as P;
+        let port = spawn_join_reject_mock().await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#banned").unwrap();
+        assert!(h.server().contains_channel("#banned"));
+
+        match next_error_event(&mut h.rx).await {
+            P::JoinFailed {
+                channel, reason, ..
+            } => {
+                assert_eq!(channel, "#banned");
+                assert_eq!(reason, "Cannot join channel (+b)");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(!h.server().contains_channel("#banned"));
+        assert_eq!(load_saved_channels(&h.path).get("#banned"), None);
+    }
+
+    /// 접속 시 자동 재입장이 실패하면 알리기만 하고 저장된 채널은 유지한다.
+    #[tokio::test]
+    async fn auto_rejoin_failure_keeps_saved_channel() {
+        use crate::client::event::UIEventPayload as P;
+        let port = spawn_join_reject_mock().await;
+        let mut h = NickHarness::new(port);
+        h.server().insert_channel("#saved", true);
+
+        h.connect();
+        match next_error_event(&mut h.rx).await {
+            P::Error {
+                target, message, ..
+            } => {
+                assert_eq!(target.as_deref(), Some("#saved"));
+                assert_eq!(message, "Cannot join channel (+b)");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(h.server().contains_channel("#saved"));
+    }
+
+    /// 대상이 있는 에러(404 등)는 대상과 사유를 담은 Error로 보낸다.
+    #[tokio::test]
+    async fn target_error_numeric_is_forwarded_with_target() {
+        use crate::client::event::UIEventPayload as P;
+        let port = spawn_join_reply_mock(":mock 404 nick #a :Cannot send to channel\r\n").await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        match next_error_event(&mut h.rx).await {
+            P::Error {
+                target, message, ..
+            } => {
+                assert_eq!(target.as_deref(), Some("#a"));
+                assert_eq!(message, "Cannot send to channel");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    // ==================== irc 크레이트 기본 동작과의 중복 ====================
+
+    /// CTCP 요청에는 보낸 사람에게 한 번만 응답한다. 채널로 온 요청도 채널이 아닌 보낸 사람에게.
+    /// (이전: irc 크레이트의 ctcp feature도 응답해 중복됐고, 채널 요청엔 채널 전체로 응답했다)
+    #[tokio::test]
+    async fn ctcp_requests_get_a_single_reply_to_sender() {
+        let (port, sent) = spawn_logging_join_reply_mock(concat!(
+            ":bob!u@mock PRIVMSG nick :\x01VERSION\x01\r\n",
+            ":bob!u@mock PRIVMSG #a :\x01PING 123\x01\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+        // 두 응답이 다 나간 뒤에 표식을 보낸다
+        timeout(Duration::from_secs(5), async {
+            while sent
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.starts_with("NOTICE"))
+                .count()
+                < 2
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("ctcp replies not sent");
+
+        let notices: Vec<String> = lines_until_marker(&h, &sent)
+            .await
+            .into_iter()
+            .filter(|line| line.starts_with("NOTICE"))
+            .collect();
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert!(notices[0].starts_with("NOTICE bob "), "{notices:?}");
+        assert!(notices[0].contains("VERSION khannel"), "{notices:?}");
+        assert!(notices[1].starts_with("NOTICE bob "), "{notices:?}");
+        assert!(notices[1].contains("PING 123"), "{notices:?}");
+    }
+
+    /// 접속 후 저장된 채널에는 JOIN을 한 번만 보낸다.
+    /// (이전: irc 크레이트의 channel-lists feature가 376에서 입장한 채널로 JOIN을 다시 보냈다)
+    #[tokio::test]
+    async fn saved_channel_is_joined_once_after_motd() {
+        let (port, sent) = spawn_logging_join_reply_mock(concat!(
+            ":nick!u@mock JOIN #saved\r\n",
+            ":mock 353 nick = #saved :nick\r\n",
+            ":mock 366 nick #saved :End of /NAMES list.\r\n",
+            ":mock 376 nick :End of /MOTD command.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+        h.server().insert_channel("#saved", false);
+
+        h.connect();
+        // 376까지 처리된 뒤(= MOTD 메시지 없이 끝나므로 NAMES 이벤트 이후) 표식을 보낸다
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(UiEvent::Ui(crate::client::event::UIEventPayload::Names { .. })) =
+                    h.rx.recv().await
+                {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("no names event");
+
+        let joins: Vec<String> = lines_until_marker(&h, &sent)
+            .await
+            .into_iter()
+            .filter(|line| line.starts_with("JOIN"))
+            .collect();
+        assert_eq!(joins, ["JOIN #saved"]);
+    }
+
+    // ==================== ISUPPORT / MODE / INVITE ====================
+
+    /// 005 PREFIX를 받은 뒤엔 그 기호만 NAMES에서 뗀다 (`~`로 시작하는 닉을 보존).
+    #[tokio::test]
+    async fn names_use_isupport_prefix_symbols() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 005 nick PREFIX=(ov)@+ CHANTYPES=# :are supported by this server\r\n",
+            ":mock 353 nick = #a :@op ~tilde\r\n",
+            ":mock 366 nick #a :End of /NAMES list.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let users = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(UiEvent::Ui(crate::client::event::UIEventPayload::Names {
+                    users,
+                    ..
+                })) = h.rx.recv().await
+                {
+                    return users;
+                }
+            }
+        })
+        .await
+        .expect("no names event");
+        assert_eq!(users, ["op", "~tilde"]);
+    }
+
+    /// 채널 MODE는 바꾼 닉(서버면 None)과 함께, INVITE는 서버 버퍼 메시지로 보낸다.
+    #[tokio::test]
+    async fn channel_mode_and_invite_are_forwarded() {
+        let port = spawn_join_reply_mock(concat!(
+            ":irc.mock.net MODE #a +nt\r\n",
+            ":op!u@mock MODE #a +o-v lee bob\r\n",
+            ":bob!u@mock INVITE nick #secret\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        assert_eq!(
+            next_system_message(&mut h.rx).await,
+            "서버에 연결되었습니다."
+        );
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        let mut modes = Vec::new();
+        let invite = timeout(Duration::from_secs(5), async {
+            loop {
+                match h.rx.recv().await {
+                    Some(UiEvent::Ui(crate::client::event::UIEventPayload::ChannelMode {
+                        channel,
+                        by,
+                        modes: changed,
+                        ..
+                    })) => modes.push((channel, by, changed)),
+                    Some(UiEvent::SystemMessage(p)) => return p.message,
+                    Some(_) => continue,
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("no invite message");
+
+        assert_eq!(
+            modes,
+            [
+                ("#a".into(), None, "+nt".into()),
+                ("#a".into(), Some("op".into()), "+o-v lee bob".into()),
+            ]
+        );
+        assert_eq!(invite, "bob invited you to #secret");
+    }
+
+    // ==================== 접속 정보 / MOTD ====================
+
+    /// 접속 정보 numeric은 서버 버퍼 메시지로, MOTD는 376까지 모아 메시지 하나로 보낸다.
+    #[tokio::test]
+    async fn info_numerics_and_collected_motd_go_to_server_buffer() {
+        let port = spawn_join_reply_mock(concat!(
+            ":mock 002 nick :Your host is mock\r\n",
+            ":mock 252 nick 3 :operator(s) online\r\n",
+            ":mock 375 nick :- mock Message of the Day -\r\n",
+            ":mock 372 nick :- line one\r\n",
+            ":mock 372 nick :- line two\r\n",
+            ":mock 376 nick :End of /MOTD command.\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        // 001 직후의 "서버에 연결되었습니다." 안내는 건너뛴다
+        assert_eq!(
+            next_system_message(&mut h.rx).await,
+            "서버에 연결되었습니다."
+        );
+        h.api.join_channel(h.server_id, "#a").unwrap();
+
+        assert_eq!(next_system_message(&mut h.rx).await, "Your host is mock");
+        assert_eq!(next_system_message(&mut h.rx).await, "3 operator(s) online");
+        assert_eq!(
+            next_system_message(&mut h.rx).await,
+            "- mock Message of the Day -\nline one\nline two"
+        );
     }
 
     // ==================== 서버 삭제 ====================
