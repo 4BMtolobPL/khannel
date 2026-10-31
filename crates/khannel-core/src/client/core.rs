@@ -510,10 +510,14 @@ impl ServerActor {
 
                 // 기존 채널이 존재하면 연결. 커맨드 채널(ServerCommand::Join)을 거치지 않고 바로
                 // 보낸다 — 사용자 요청 입장(pending_joins)과 구분해, 자동 재입장이 실패해도
-                // 저장된 채널을 지우지 않기 위함
-                for (channel_name, _channel_state) in self.server.channels() {
-                    info!(event = "auto_join", channel = %channel_name);
-                    if let Err(e) = client.send_join(&channel_name) {
+                // 저장된 채널을 지우지 않기 위함.
+                // 채널마다 한 줄씩 보내면 서버의 flood 제한(fakelag)에 걸려 한 채널씩 몇 초 간격으로
+                // 들어가므로, 쉼표로 묶어 몇 줄로 보낸다 (irssi/weechat과 같은 방식)
+                let mut channels: Vec<String> = self.server.channels().into_keys().collect();
+                channels.sort();
+                for chanlist in join_batches(&channels) {
+                    info!(event = "auto_join", channels = %chanlist);
+                    if let Err(e) = client.send_join(&chanlist) {
                         error!("Failed to send join message: {e}");
                     }
                 }
@@ -839,6 +843,35 @@ fn format_modes<T: ModeType>(modes: &[Mode<T>]) -> String {
         })
 }
 
+/// 자동 재입장 JOIN 한 줄에 묶을 최대 채널 수. 서버의 대상 수 제한(TARGMAX 등)에 걸리지 않게 보수적으로
+const JOIN_BATCH_MAX_CHANNELS: usize = 10;
+/// 자동 재입장 JOIN 한 줄의 채널 목록 최대 길이 (IRC 한 줄 512바이트 제한 안쪽으로 여유를 둔다)
+const JOIN_BATCH_MAX_LEN: usize = 400;
+
+/// 채널들을 `JOIN #a,#b,...` 한 줄에 들어갈 쉼표 목록들로 묶는다
+fn join_batches(channels: &[String]) -> Vec<String> {
+    let mut batches: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut count = 0;
+    for channel in channels {
+        let fits = count < JOIN_BATCH_MAX_CHANNELS
+            && current.len() + 1 + channel.len() <= JOIN_BATCH_MAX_LEN;
+        if !current.is_empty() && !fits {
+            batches.push(std::mem::take(&mut current));
+            count = 0;
+        }
+        if !current.is_empty() {
+            current.push(',');
+        }
+        current.push_str(channel);
+        count += 1;
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
 /// 등록 단계에서 닉이 거부될 때 시도할 대체 닉 수 (`닉_`, `닉__`, `닉___`)
 const MAX_ALT_NICKS: usize = 3;
 
@@ -1030,6 +1063,26 @@ mod tests {
             member_mode_changes(&modes, &DEFAULT_PREFIX),
             [change("a", '%', true), change("b", '~', true)]
         );
+    }
+
+    #[test]
+    fn test_join_batches() {
+        let channels = |n: usize| (0..n).map(|i| format!("#c{i}")).collect::<Vec<_>>();
+
+        assert!(join_batches(&[]).is_empty());
+        assert_eq!(join_batches(&channels(3)), ["#c0,#c1,#c2"]);
+
+        // 최대 채널 수에서 줄을 나눈다
+        let batches = join_batches(&channels(21));
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].split(',').count(), JOIN_BATCH_MAX_CHANNELS);
+        assert_eq!(batches[2], "#c20");
+
+        // 긴 채널명은 길이 제한에서 나눈다 (한 채널이 제한보다 길어도 혼자 한 줄로 보낸다)
+        let long = vec!["#".repeat(250), "#".repeat(250), "#".repeat(500)];
+        let batches = join_batches(&long);
+        assert_eq!(batches.len(), 3);
+        assert!(batches.iter().all(|b| !b.contains(',')));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 mod users;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::Context;
@@ -246,7 +246,15 @@ pub struct IrcModel {
     nick_errors: HashMap<ServerId, String>,
     // 닉네임 변경 요청 ↔ 성공 매칭 — 닉변 모달의 성공 자동 닫힘 용도.
     nick_change: NickChangeTracker,
+    /// 사용자가 입장을 요청해 JOIN 응답을 기다리는 채널 (`focus_key`). 응답이 오면 그 채널로 전환한다.
+    /// 접속 시 자동 재입장은 여기 없으므로 화면을 바꾸지 않는다
+    pending_focus: HashSet<String>,
     api: Arc<UiApi>,
+}
+
+/// `pending_focus` 키 — IRC 채널명은 대소문자를 구분하지 않으므로 소문자로 (서버가 돌려준 표기와 맞추기 위함)
+fn focus_key(server_id: &ServerId, channel: &str) -> String {
+    format!("{server_id}:{}", channel.to_lowercase())
 }
 
 impl IrcModel {
@@ -259,6 +267,7 @@ impl IrcModel {
             current_channel_id: None,
             nick_errors: HashMap::new(),
             nick_change: NickChangeTracker::default(),
+            pending_focus: HashSet::new(),
             api: api.clone(),
         };
 
@@ -358,8 +367,11 @@ impl IrcModel {
         if let Some(server) = self.servers.get_mut(&p.server_id) {
             server.status = map_status(&p.status);
         }
-        // 연결이 끊기면 유저 목록은 더 이상 맞지 않는다 — 재입장 후 NAMES로 다시 채워진다
+        // 연결이 끊기면 유저 목록은 더 이상 맞지 않는다 — 재입장 후 NAMES로 다시 채워진다.
+        // 응답을 못 받은 입장 요청도 버린다 (다음 접속의 자동 재입장이 화면을 바꾸지 않게)
         if matches!(p.status, ServerStatus::Disconnected | ServerStatus::Failed) {
+            let prefix = format!("{}:", p.server_id);
+            self.pending_focus.retain(|key| !key.starts_with(&prefix));
             for channel in self
                 .channels
                 .values_mut()
@@ -461,8 +473,13 @@ impl IrcModel {
                     if let Some(channel) = self.channels.get_mut(&channel_id) {
                         channel.users.insert(&nick);
 
-                        // 내 Join이면 현재 채널로 자동 전환
-                        if own_join {
+                        // 사용자가 요청한 입장이면 그 채널로 전환한다. 접속 시 자동 재입장은
+                        // 보던 화면을 유지한다 (채널마다 화면이 바뀌면 그동안 쓸 수 없다)
+                        if own_join
+                            && self
+                                .pending_focus
+                                .remove(&focus_key(&server_id, &channel.name))
+                        {
                             self.current_server_id = Some(server_id);
                             self.current_channel_id = Some(channel_id.clone());
                         }
@@ -728,6 +745,7 @@ impl IrcModel {
                 channel,
                 reason,
             } => {
+                self.pending_focus.remove(&focus_key(&server_id, &channel));
                 // 이미 열려 있던 채널(예: 강퇴 후 재입장 시도)이면 코어처럼 지운다
                 let channel_id = self.get_channel_id(&server_id, &channel);
                 if self.channels.remove(&channel_id).is_some() {
@@ -907,6 +925,9 @@ impl IrcModel {
             tracing::warn!("join_channel failed: {}", e);
             e.to_string()
         });
+        if result.is_ok() {
+            self.pending_focus.insert(focus_key(&server_id, channel));
+        }
         cx.notify();
         result
     }
