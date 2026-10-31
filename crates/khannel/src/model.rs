@@ -949,6 +949,27 @@ impl IrcModel {
         cx.notify();
     }
 
+    /// `nick`이 그 서버에서의 내 닉인지 (대소문자 무시)
+    pub fn is_own_nick(&self, server_id: &ServerId, nick: &str) -> bool {
+        self.servers
+            .get(server_id)
+            .is_some_and(|server| nick_eq(&server.nickname, nick))
+    }
+
+    /// 닉과의 DM(query) 버퍼를 열고 그 버퍼로 전환한다 (유저 목록 더블클릭/메뉴).
+    /// 내 닉이면 열지 않는다 (자신과의 대화 버퍼는 만들지 않는다)
+    pub fn open_query(&mut self, server_id: ServerId, nick: &str, cx: &mut Context<Self>) {
+        if self.is_own_nick(&server_id, nick) {
+            return;
+        }
+        self.ensure_channel(server_id, nick);
+        let channel_id = self.get_channel_id(&server_id, nick);
+        if self.channels.contains_key(&channel_id) {
+            self.current_server_id = Some(server_id);
+            self.set_current_channel(Some(channel_id), cx);
+        }
+    }
+
     pub fn get_channel_id(&self, server_id: &ServerId, channel_name: &str) -> String {
         format!("{}:{}", server_id, channel_name)
     }
@@ -996,6 +1017,18 @@ impl IrcModel {
         self.current_channel_id
             .as_ref()
             .and_then(|id| self.channels.get(id))
+    }
+
+    /// 현재 채널의 유저 목록(표시 순서)과 서버 ID. 채널 버퍼일 때만 Some — 서버 버퍼/DM은 None
+    pub fn current_channel_users(&self) -> Option<(ServerId, Vec<ChannelUser>)> {
+        let channel = self
+            .current_channel()
+            .filter(|c| is_channel_name(&c.name))?;
+        let symbols = self
+            .servers
+            .get(&channel.server_id)
+            .map_or(DEFAULT_PREFIX_SYMBOLS, |s| s.prefix_symbols.as_str());
+        Some((channel.server_id, channel.users.sorted(symbols)))
     }
 
     pub fn current_messages(&self) -> Option<&Vec<ChatMessage>> {
