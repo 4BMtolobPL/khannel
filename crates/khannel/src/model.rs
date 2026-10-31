@@ -100,23 +100,21 @@ fn map_status(status: &khannel_core::client::types::ServerStatus) -> UiServerSta
     }
 }
 
-/// 사이드바 채널 표시 순서: 채널명 오름차순.
-/// IRC 채널명은 대소문자를 구분하지 않으므로 소문자 기준으로 먼저 비교하고,
+/// 사이드바 이름 비교: 자연 순서(`#2` < `#10`)로, 대소문자는 무시하고 먼저 비교한다.
 /// 같으면 원래 이름으로 비교해 순서를 결정적으로 만든다.
-fn channel_order(a: &Channel, b: &Channel) -> std::cmp::Ordering {
-    a.name
-        .to_lowercase()
-        .cmp(&b.name.to_lowercase())
-        .then_with(|| a.name.cmp(&b.name))
+fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    alphanumeric_sort::compare_str(a.to_lowercase(), b.to_lowercase())
+        .then_with(|| alphanumeric_sort::compare_str(a, b))
 }
 
-/// 사이드바 서버 표시 순서: 서버 이름 오름차순(대소문자 무시), 같으면 ID 순.
+/// 사이드바 채널 표시 순서: 채널명 자연 순서 (IRC 채널명은 대소문자를 구분하지 않는다).
+fn channel_order(a: &Channel, b: &Channel) -> std::cmp::Ordering {
+    name_order(&a.name, &b.name)
+}
+
+/// 사이드바 서버 표시 순서: 서버 이름 자연 순서, 같으면 ID 순.
 fn server_order(a: &Server, b: &Server) -> std::cmp::Ordering {
-    a.name
-        .to_lowercase()
-        .cmp(&b.name.to_lowercase())
-        .then_with(|| a.name.cmp(&b.name))
-        .then_with(|| a.id.cmp(&b.id))
+    name_order(&a.name, &b.name).then_with(|| a.id.cmp(&b.id))
 }
 
 /// IRC 닉 비교 — 대소문자를 구분하지 않는다.
@@ -292,6 +290,12 @@ impl IrcModel {
                     for channel in &info.channels {
                         m.sync_channel_from_core(info.id, channel.name(), channel.locked());
                     }
+                }
+                // 첫 화면: 아직 아무것도 선택하지 않았으면 사이드바 맨 위 서버를 선택해 둔다
+                if m.current_server_id.is_none()
+                    && let Some(first) = m.sorted_servers().first().map(|s| s.id)
+                {
+                    m.current_server_id = Some(first);
                 }
                 cx.notify();
             });
@@ -1389,6 +1393,20 @@ mod tests {
         channels.sort_by(channel_order);
         let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["#a", "#gpui", "#Rust", "#rust", "#Zed"]);
+    }
+
+    #[test]
+    fn channels_sort_in_natural_order() {
+        let mut channels: Vec<Channel> = ["#20", "#2", "#test10", "#10", "#1", "#Test2", "#11"]
+            .into_iter()
+            .map(channel)
+            .collect();
+        channels.sort_by(channel_order);
+        let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["#1", "#2", "#10", "#11", "#20", "#Test2", "#test10"]
+        );
     }
 
     #[test]
