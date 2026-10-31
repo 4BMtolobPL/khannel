@@ -1,5 +1,5 @@
 use crate::client::ctcp::{CtcpCommand, ctcp_body, parse_ctcp};
-use crate::client::event::EventSender;
+use crate::client::event::{EventSender, MemberModeChange, NamesEntry};
 use crate::client::event::{
     emit_change_nick_failed, emit_server_status, emit_system_message, emit_ui_event,
 };
@@ -12,7 +12,7 @@ use irc::client::prelude::*;
 use irc::error;
 use irc::proto::mode::ModeType;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, LazyLock, Weak};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
@@ -361,8 +361,15 @@ impl ServerActor {
                 // 서버가 건 모드(입장 직후 +nt 등)는 발신자 닉이 없다
                 if !modes.is_empty() {
                     let by = Some(source_nickname).filter(|nick| !nick.is_empty());
+                    let member_changes = member_mode_changes(&modes, ctx.prefix());
                     emit_ui_event(&self.ui_sink)
-                        .channel_mode(self.server_id, channel, by, format_modes(&modes))
+                        .channel_mode(
+                            self.server_id,
+                            channel,
+                            by,
+                            format_modes(&modes),
+                            member_changes,
+                        )
                         .emit();
                 }
             }
@@ -394,13 +401,13 @@ impl ServerActor {
             }
             Command::Response(Response::RPL_ISUPPORT, args) => {
                 // args: [내 닉, "TOKEN=값", ..., "are supported by this server"] — 여러 줄로 온다
-                if let Some(symbols) = args
+                if let Some(prefix) = args
                     .iter()
                     .skip(1)
                     .find_map(|token| parse_isupport_prefix(token))
                 {
-                    debug!(event = "isupport_prefix", symbols = %symbols);
-                    ctx.prefix_symbols = Some(symbols);
+                    debug!(event = "isupport_prefix", modes = %prefix.modes, symbols = %prefix.symbols);
+                    ctx.prefix = Some(prefix);
                 }
             }
             Command::KICK(channel, kicked, comment) => {
@@ -520,19 +527,19 @@ impl ServerActor {
                 // args: [내 닉, 채널 타입(= * @), 채널, "닉 @닉 +닉 ..."]
                 // 한 채널의 목록이 여러 줄로 나뉘어 오므로 366까지 모은다
                 if let [_, .., channel, names] = args.as_slice() {
-                    let symbols = ctx
-                        .prefix_symbols
-                        .as_deref()
-                        .unwrap_or(DEFAULT_PREFIX_SYMBOLS);
+                    let symbols = ctx.prefix().symbols.clone();
                     ctx.pending_names
                         .entry(channel.to_lowercase())
                         .or_default()
                         .extend(
                             names
                                 .split_whitespace()
-                                .map(|nick| strip_nick_prefix(nick, symbols))
-                                .filter(|nick| !nick.is_empty())
-                                .map(str::to_string),
+                                .map(|entry| split_nick_prefix(entry, &symbols))
+                                .filter(|(_, nick)| !nick.is_empty())
+                                .map(|(prefixes, nick)| NamesEntry {
+                                    nick: nick.to_string(),
+                                    prefixes: prefixes.to_string(),
+                                }),
                         );
                 }
             }
@@ -544,8 +551,9 @@ impl ServerActor {
                         .pending_names
                         .remove(&channel.to_lowercase())
                         .unwrap_or_default();
+                    let symbols = ctx.prefix().symbols.clone();
                     emit_ui_event(&self.ui_sink)
-                        .names(self.server_id, channel.clone(), users)
+                        .names(self.server_id, channel.clone(), users, symbols)
                         .emit();
                 }
             }
@@ -663,13 +671,20 @@ struct SessionCtx {
     /// 등록 단계에서 닉이 거부될 때 시도한 대체 닉 수 (`alt_nick`)
     alt_attempts: usize,
     /// 366(RPL_ENDOFNAMES)까지 모으는 채널별 NAMES(353) 응답. 키는 소문자 채널명
-    pending_names: HashMap<String, Vec<String>>,
+    pending_names: HashMap<String, Vec<NamesEntry>>,
     /// 사용자가 요청했고 아직 JOIN 응답이 오지 않은 채널 (소문자). 자동 재입장은 포함하지 않는다
     pending_joins: HashSet<String>,
     /// 376(RPL_ENDOFMOTD)까지 모으는 MOTD 줄 (375 머리줄 포함)
     motd: Option<Vec<String>>,
-    /// 005 PREFIX로 받은 채널 권한 접두사 기호 (예: `@+`). 받기 전엔 None
-    prefix_symbols: Option<String>,
+    /// 005 PREFIX로 받은 채널 권한 모드/접두사 (예: `(ov)@+`). 받기 전엔 None
+    prefix: Option<PrefixMap>,
+}
+
+impl SessionCtx {
+    /// 서버의 권한 모드/접두사. 005를 받기 전이면 흔히 쓰이는 기본값
+    fn prefix(&self) -> &PrefixMap {
+        self.prefix.as_ref().unwrap_or(&DEFAULT_PREFIX)
+    }
 }
 
 /// 서버 버퍼에 그대로 보여줄 접속 정보 numeric (MOTD는 따로 모은다)
@@ -730,23 +745,72 @@ fn is_target_error(response: Response) -> bool {
     )
 }
 
-/// 005 PREFIX를 받기 전에 쓰는 채널 권한 접두사 (흔히 쓰이는 것 전부)
-const DEFAULT_PREFIX_SYMBOLS: &str = "~&@%+";
-
-/// NAMES 응답의 닉 앞 채널 권한 접두사(`symbols` 중 하나)를 뗀다. multi-prefix(`@+nick`)도 처리.
-fn strip_nick_prefix<'a>(nick: &'a str, symbols: &str) -> &'a str {
-    nick.trim_start_matches(|c| symbols.contains(c))
+/// 채널 권한 모드 문자와 접두사 기호의 대응 (005 PREFIX). 같은 위치끼리 짝이고, 높은 권한이 먼저 온다
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrefixMap {
+    /// 모드 문자 (예: `ov`)
+    modes: String,
+    /// 접두사 기호 (예: `@+`)
+    symbols: String,
 }
 
-/// 005(RPL_ISUPPORT) 토큰 중 `PREFIX=(ov)@+`의 접두사 기호(`@+`)를 꺼낸다.
-/// `PREFIX=`(값 없음)는 권한 접두사가 없다는 뜻이라 빈 문자열이다.
-fn parse_isupport_prefix(token: &str) -> Option<String> {
+impl PrefixMap {
+    /// 권한 모드 문자(`o`)에 대응하는 접두사 기호(`@`)
+    fn symbol_for(&self, mode: char) -> Option<char> {
+        let index = self.modes.chars().position(|m| m == mode)?;
+        self.symbols.chars().nth(index)
+    }
+}
+
+/// 005 PREFIX를 받기 전에 쓰는 채널 권한 모드/접두사 (흔히 쓰이는 것 전부)
+static DEFAULT_PREFIX: LazyLock<PrefixMap> = LazyLock::new(|| PrefixMap {
+    modes: "qaohv".to_string(),
+    symbols: "~&@%+".to_string(),
+});
+
+/// NAMES 응답 항목을 (권한 접두사, 닉)으로 나눈다. multi-prefix(`@+nick`)도 처리.
+fn split_nick_prefix<'a>(entry: &'a str, symbols: &str) -> (&'a str, &'a str) {
+    let nick = entry.trim_start_matches(|c| symbols.contains(c));
+    (&entry[..entry.len() - nick.len()], nick)
+}
+
+/// 005(RPL_ISUPPORT) 토큰 중 `PREFIX=(ov)@+`를 모드/기호로 꺼낸다.
+/// `PREFIX=`(값 없음)는 권한 접두사가 없다는 뜻이라 둘 다 빈 문자열이다.
+fn parse_isupport_prefix(token: &str) -> Option<PrefixMap> {
     let value = token.strip_prefix("PREFIX=")?;
     if value.is_empty() {
-        return Some(String::new());
+        return Some(PrefixMap {
+            modes: String::new(),
+            symbols: String::new(),
+        });
     }
-    let (_modes, symbols) = value.strip_prefix('(')?.split_once(')')?;
-    Some(symbols.to_string())
+    let (modes, symbols) = value.strip_prefix('(')?.split_once(')')?;
+    Some(PrefixMap {
+        modes: modes.to_string(),
+        symbols: symbols.to_string(),
+    })
+}
+
+/// 채널 MODE 중 유저 권한 변경(`+o nick`, `-v nick` ...)만 골라 접두사 기호 변경으로 바꾼다
+fn member_mode_changes(modes: &[Mode<ChannelMode>], prefix: &PrefixMap) -> Vec<MemberModeChange> {
+    modes
+        .iter()
+        .filter_map(|mode| {
+            let (added, nick) = match mode {
+                Mode::Plus(_, Some(nick)) => (true, nick),
+                Mode::Minus(_, Some(nick)) => (false, nick),
+                _ => return None,
+            };
+            // flag()는 `+o` 형태 — 부호 다음 글자가 모드 문자
+            let letter = mode.flag().chars().nth(1)?;
+            let symbol = prefix.symbol_for(letter)?;
+            Some(MemberModeChange {
+                nick: nick.clone(),
+                symbol,
+                added,
+            })
+        })
+        .collect()
 }
 
 /// MODE 변경을 `+nt`, `+o-v nick1 nick2` 형태로 (같은 부호는 묶고, 모드 문자 다음에 인자들)
@@ -909,32 +973,63 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_nick_prefix() {
-        let symbols = DEFAULT_PREFIX_SYMBOLS;
-        assert_eq!(strip_nick_prefix("nick", symbols), "nick");
-        assert_eq!(strip_nick_prefix("@op", symbols), "op");
-        assert_eq!(strip_nick_prefix("+voice", symbols), "voice");
-        assert_eq!(strip_nick_prefix("~owner", symbols), "owner");
-        assert_eq!(strip_nick_prefix("@+both", symbols), "both");
-        assert_eq!(strip_nick_prefix("@", symbols), "");
+    fn test_split_nick_prefix() {
+        let symbols = DEFAULT_PREFIX.symbols.as_str();
+        assert_eq!(split_nick_prefix("nick", symbols), ("", "nick"));
+        assert_eq!(split_nick_prefix("@op", symbols), ("@", "op"));
+        assert_eq!(split_nick_prefix("+voice", symbols), ("+", "voice"));
+        assert_eq!(split_nick_prefix("~owner", symbols), ("~", "owner"));
+        assert_eq!(split_nick_prefix("@+both", symbols), ("@+", "both"));
+        assert_eq!(split_nick_prefix("@", symbols), ("@", ""));
         // 005 PREFIX=(ov)@+ 서버에선 ~/&로 시작하는 닉을 그대로 둔다
-        assert_eq!(strip_nick_prefix("~tilde", "@+"), "~tilde");
-        assert_eq!(strip_nick_prefix("@op", ""), "@op");
+        assert_eq!(split_nick_prefix("~tilde", "@+"), ("", "~tilde"));
+        assert_eq!(split_nick_prefix("@op", ""), ("", "@op"));
+    }
+
+    fn prefix_map(modes: &str, symbols: &str) -> PrefixMap {
+        PrefixMap {
+            modes: modes.to_string(),
+            symbols: symbols.to_string(),
+        }
     }
 
     #[test]
     fn test_parse_isupport_prefix() {
         assert_eq!(
-            parse_isupport_prefix("PREFIX=(qaohv)~&@%+").as_deref(),
-            Some("~&@%+")
+            parse_isupport_prefix("PREFIX=(qaohv)~&@%+"),
+            Some(prefix_map("qaohv", "~&@%+"))
         );
         assert_eq!(
-            parse_isupport_prefix("PREFIX=(ov)@+").as_deref(),
-            Some("@+")
+            parse_isupport_prefix("PREFIX=(ov)@+"),
+            Some(prefix_map("ov", "@+"))
         );
-        assert_eq!(parse_isupport_prefix("PREFIX=").as_deref(), Some(""));
+        assert_eq!(parse_isupport_prefix("PREFIX="), Some(prefix_map("", "")));
         assert_eq!(parse_isupport_prefix("CHANTYPES=#"), None);
         assert_eq!(parse_isupport_prefix("PREFIX=garbage"), None);
+    }
+
+    #[test]
+    fn test_member_mode_changes() {
+        let change = |nick: &str, symbol, added| MemberModeChange {
+            nick: nick.to_string(),
+            symbol,
+            added,
+        };
+
+        // 권한 모드만 고르고, 인자 없는 모드(+n)나 권한이 아닌 인자 모드(+b)는 뺀다
+        let modes = Mode::as_channel_modes(&["+o-v+nb", "lee", "bob", "*!*@spam"]).unwrap();
+        assert_eq!(
+            member_mode_changes(&modes, &DEFAULT_PREFIX),
+            [change("lee", '@', true), change("bob", '+', false)]
+        );
+
+        // 서버 PREFIX에 없는 권한 모드는 무시한다 (PREFIX=(ov)@+ 서버의 +h)
+        let modes = Mode::as_channel_modes(&["+hq", "a", "b"]).unwrap();
+        assert!(member_mode_changes(&modes, &prefix_map("ov", "@+")).is_empty());
+        assert_eq!(
+            member_mode_changes(&modes, &DEFAULT_PREFIX),
+            [change("a", '%', true), change("b", '~', true)]
+        );
     }
 
     #[test]
@@ -1570,7 +1665,7 @@ mod quit_tests {
         .expect("marker never reached the server")
     }
 
-    /// 여러 줄의 353을 366까지 모아, 접두사를 뗀 전체 목록으로 한 번에 보낸다.
+    /// 여러 줄의 353을 366까지 모아, 닉과 접두사를 나눈 전체 목록으로 한 번에 보낸다.
     #[tokio::test]
     async fn names_reply_is_collected_until_end_of_names() {
         let port = spawn_join_reply_mock(concat!(
@@ -1602,7 +1697,20 @@ mod quit_tests {
         .expect("no names event");
 
         assert_eq!(channel, "#Test");
-        assert_eq!(users, ["nick", "op", "voice", "owner", "both"]);
+        let users: Vec<(&str, &str)> = users
+            .iter()
+            .map(|u| (u.prefixes.as_str(), u.nick.as_str()))
+            .collect();
+        assert_eq!(
+            users,
+            [
+                ("", "nick"),
+                ("@", "op"),
+                ("+", "voice"),
+                ("~", "owner"),
+                ("@+", "both")
+            ]
+        );
     }
 
     // ==================== TOPIC ====================
@@ -2015,20 +2123,26 @@ mod quit_tests {
         wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
         h.api.join_channel(h.server_id, "#a").unwrap();
 
-        let users = timeout(Duration::from_secs(5), async {
+        let (users, prefix_symbols) = timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(UiEvent::Ui(crate::client::event::UIEventPayload::Names {
                     users,
+                    prefix_symbols,
                     ..
                 })) = h.rx.recv().await
                 {
-                    return users;
+                    return (users, prefix_symbols);
                 }
             }
         })
         .await
         .expect("no names event");
-        assert_eq!(users, ["op", "~tilde"]);
+        let users: Vec<(&str, &str)> = users
+            .iter()
+            .map(|u| (u.prefixes.as_str(), u.nick.as_str()))
+            .collect();
+        assert_eq!(users, [("@", "op"), ("", "~tilde")]);
+        assert_eq!(prefix_symbols, "@+");
     }
 
     /// 채널 MODE는 바꾼 닉(서버면 None)과 함께, INVITE는 서버 버퍼 메시지로 보낸다.
@@ -2058,8 +2172,9 @@ mod quit_tests {
                         channel,
                         by,
                         modes: changed,
+                        member_changes,
                         ..
-                    })) => modes.push((channel, by, changed)),
+                    })) => modes.push((channel, by, changed, member_changes.len())),
                     Some(UiEvent::SystemMessage(p)) => return p.message,
                     Some(_) => continue,
                     None => panic!("event channel closed"),
@@ -2072,8 +2187,8 @@ mod quit_tests {
         assert_eq!(
             modes,
             [
-                ("#a".into(), None, "+nt".into()),
-                ("#a".into(), Some("op".into()), "+o-v lee bob".into()),
+                ("#a".into(), None, "+nt".into(), 0),
+                ("#a".into(), Some("op".into()), "+o-v lee bob".into(), 2),
             ]
         );
         assert_eq!(invite, "bob invited you to #secret");

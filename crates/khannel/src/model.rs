@@ -3,7 +3,9 @@
 //! 이벤트 버스(UiEventReceiver)를 소비하며 GPUI Entity로 상태를 유지.
 //! 이벤트 → 상태 반영 로직은 ircService.ts의 switch 문을 1:1 이식.
 
-use std::collections::{BTreeSet, HashMap};
+mod users;
+
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::Context;
@@ -11,10 +13,12 @@ use khannel_core::client::event::{
     ChangeNickFailedPayload, ChannelLockChangedEvent, ServerDetail, ServerStatusPayload,
     SystemMessagePayload, UIEventPayload, UiEvent,
 };
-use khannel_core::client::types::ServerId;
+use khannel_core::client::types::{ServerId, ServerStatus};
 use serde::Serialize;
 
 use crate::api::{UiApi, UiEventReceiver};
+
+pub use users::{ChannelUser, ChannelUsers, DEFAULT_PREFIX_SYMBOLS};
 
 // ==================================== Types ====================================
 
@@ -68,6 +72,8 @@ pub struct Server {
     pub nickname: String,
     pub status: UiServerStatus,
     pub server_messages: Vec<ChatMessage>,
+    /// 권한 접두사 기호, 높은 권한부터 (NAMES로 받은 서버 PREFIX) — 유저 목록 정렬 기준
+    pub prefix_symbols: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,7 +81,7 @@ pub struct Server {
 pub struct Channel {
     pub server_id: ServerId,
     pub name: String,
-    pub users: BTreeSet<String>,
+    pub users: ChannelUsers,
     pub unread: u32,
     pub locked: bool,
     pub last_read_message_id: Option<MessageId>,
@@ -343,6 +349,7 @@ impl IrcModel {
                 nickname: d.nickname,
                 status: map_status(&d.status),
                 server_messages: Vec::new(),
+                prefix_symbols: DEFAULT_PREFIX_SYMBOLS.to_string(),
             },
         );
     }
@@ -350,6 +357,16 @@ impl IrcModel {
     fn on_server_status(&mut self, p: ServerStatusPayload) {
         if let Some(server) = self.servers.get_mut(&p.server_id) {
             server.status = map_status(&p.status);
+        }
+        // 연결이 끊기면 유저 목록은 더 이상 맞지 않는다 — 재입장 후 NAMES로 다시 채워진다
+        if matches!(p.status, ServerStatus::Disconnected | ServerStatus::Failed) {
+            for channel in self
+                .channels
+                .values_mut()
+                .filter(|c| c.server_id == p.server_id)
+            {
+                channel.users.clear();
+            }
         }
     }
 
@@ -442,7 +459,7 @@ impl IrcModel {
                     let own_join = nick_eq(&nick, &server.nickname);
 
                     if let Some(channel) = self.channels.get_mut(&channel_id) {
-                        channel.users.insert(nick.clone());
+                        channel.users.insert(&nick);
 
                         // 내 Join이면 현재 채널로 자동 전환
                         if own_join {
@@ -502,10 +519,19 @@ impl IrcModel {
                 channel,
                 by,
                 modes,
+                member_changes,
             } => {
                 // 입장한 채널에만 남긴다 (모드 변경으로 채널을 만들지 않음)
                 let channel_id = self.get_channel_id(&server_id, &channel);
-                if self.channels.contains_key(&channel_id) {
+                let symbols = self
+                    .servers
+                    .get(&server_id)
+                    .map(|s| s.prefix_symbols.clone())
+                    .unwrap_or_default();
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    for change in &member_changes {
+                        channel.users.apply_mode(change, &symbols);
+                    }
                     self.add_message(
                         server_id,
                         channel_id,
@@ -615,8 +641,7 @@ impl IrcModel {
                 for channel_name in targets {
                     let channel_id = self.get_channel_id(&server_id, &channel_name);
                     if let Some(channel) = self.channels.get_mut(&channel_id) {
-                        channel.users.remove(&old_nick);
-                        channel.users.insert(new_nick.clone());
+                        channel.users.rename(&old_nick, &new_nick);
 
                         self.add_message(
                             server_id,
@@ -663,11 +688,15 @@ impl IrcModel {
                 server_id,
                 channel,
                 users,
+                prefix_symbols,
             } => {
+                if let Some(server) = self.servers.get_mut(&server_id) {
+                    server.prefix_symbols = prefix_symbols;
+                }
                 // 입장한 채널에만 반영한다 (인자 없는 NAMES의 `*` 등으로 채널을 만들지 않음)
                 let channel_id = self.get_channel_id(&server_id, &channel);
                 if let Some(channel) = self.channels.get_mut(&channel_id) {
-                    channel.users = users.into_iter().collect();
+                    channel.users.replace(users);
                 }
             }
             P::Error {
@@ -735,7 +764,7 @@ impl IrcModel {
                 Channel {
                     server_id,
                     name: channel_name.to_string(),
-                    users: BTreeSet::new(),
+                    users: ChannelUsers::default(),
                     unread: 0,
                     locked: false,
                     last_read_message_id: None,
@@ -771,7 +800,7 @@ impl IrcModel {
                     Channel {
                         server_id,
                         name: channel_name.to_string(),
-                        users: BTreeSet::new(),
+                        users: ChannelUsers::default(),
                         unread: 0,
                         locked,
                         last_read_message_id: None,
@@ -1155,7 +1184,7 @@ mod tests {
         Channel {
             server_id: uuid::Uuid::nil(),
             name: name.to_string(),
-            users: BTreeSet::new(),
+            users: ChannelUsers::default(),
             unread: 0,
             locked: false,
             last_read_message_id: None,
@@ -1173,6 +1202,7 @@ mod tests {
             nickname: "nick".to_string(),
             status: UiServerStatus::Disconnected,
             server_messages: Vec::new(),
+            prefix_symbols: DEFAULT_PREFIX_SYMBOLS.to_string(),
         }
     }
 

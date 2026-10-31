@@ -207,12 +207,14 @@ impl UIEventBuilder {
         channel: String,
         by: Option<String>,
         modes: String,
+        member_changes: Vec<MemberModeChange>,
     ) -> Self {
         self.payload = Some(UIEventPayload::ChannelMode {
             server_id,
             channel,
             by,
             modes,
+            member_changes,
         });
 
         self
@@ -274,11 +276,18 @@ impl UIEventBuilder {
         self
     }
 
-    pub fn names(mut self, server_id: ServerId, channel: String, users: Vec<String>) -> Self {
+    pub fn names(
+        mut self,
+        server_id: ServerId,
+        channel: String,
+        users: Vec<NamesEntry>,
+        prefix_symbols: String,
+    ) -> Self {
         self.payload = Some(UIEventPayload::Names {
             server_id,
             channel,
             users,
+            prefix_symbols,
         });
 
         self
@@ -360,6 +369,25 @@ pub struct SystemMessagePayload {
     pub message: String,
 }
 
+/// NAMES 응답의 유저 한 명. 권한 접두사는 닉에서 떼어 따로 담는다
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamesEntry {
+    pub nick: String,
+    /// 권한 접두사 기호 (`@`, multi-prefix면 `@+`). 서버가 준 순서 그대로 — 높은 권한 먼저
+    pub prefixes: String,
+}
+
+/// 채널 MODE 중 유저 권한 변경 하나 (`+o nick` → `@` 추가)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberModeChange {
+    pub nick: String,
+    /// 권한 모드에 대응하는 접두사 기호 (`o` → `@`)
+    pub symbol: char,
+    pub added: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum UIEventPayload {
@@ -399,6 +427,8 @@ pub enum UIEventPayload {
         /// 모드를 바꾼 닉. 서버가 건 모드면 None
         by: Option<String>,
         modes: String,
+        /// 이 MODE 중 채널 권한(op/voice 등) 변경 — UI의 유저 목록 접두사를 갱신한다
+        member_changes: Vec<MemberModeChange>,
     },
     Kick {
         server_id: ServerId,
@@ -426,11 +456,13 @@ pub enum UIEventPayload {
         /// 토픽을 바꾼 닉 (TOPIC 커맨드). None이면 입장/조회 시 받은 현재 토픽(332/331)
         changed_by: Option<String>,
     },
-    /// 채널 유저 목록 전체 (NAMES 응답). 권한 접두사는 제거된 닉 목록 — UI는 목록을 교체한다
+    /// 채널 유저 목록 전체 (NAMES 응답) — UI는 목록을 교체한다
     Names {
         server_id: ServerId,
         channel: ChannelId,
-        users: Vec<String>,
+        users: Vec<NamesEntry>,
+        /// 서버의 권한 접두사 기호, 높은 권한부터 (005 PREFIX, 받기 전엔 기본값 `~&@%+`)
+        prefix_symbols: String,
     },
     Error {
         server_id: ServerId,
