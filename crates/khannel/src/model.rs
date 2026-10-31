@@ -3,7 +3,9 @@
 //! 이벤트 버스(UiEventReceiver)를 소비하며 GPUI Entity로 상태를 유지.
 //! 이벤트 → 상태 반영 로직은 ircService.ts의 switch 문을 1:1 이식.
 
-use std::collections::{BTreeSet, HashMap};
+mod users;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::Context;
@@ -11,10 +13,12 @@ use khannel_core::client::event::{
     ChangeNickFailedPayload, ChannelLockChangedEvent, ServerDetail, ServerStatusPayload,
     SystemMessagePayload, UIEventPayload, UiEvent,
 };
-use khannel_core::client::types::ServerId;
+use khannel_core::client::types::{ServerId, ServerStatus};
 use serde::Serialize;
 
 use crate::api::{UiApi, UiEventReceiver};
+
+pub use users::{ChannelUser, ChannelUsers, DEFAULT_PREFIX_SYMBOLS};
 
 // ==================================== Types ====================================
 
@@ -68,6 +72,8 @@ pub struct Server {
     pub nickname: String,
     pub status: UiServerStatus,
     pub server_messages: Vec<ChatMessage>,
+    /// 권한 접두사 기호, 높은 권한부터 (NAMES로 받은 서버 PREFIX) — 유저 목록 정렬 기준
+    pub prefix_symbols: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,7 +81,7 @@ pub struct Server {
 pub struct Channel {
     pub server_id: ServerId,
     pub name: String,
-    pub users: BTreeSet<String>,
+    pub users: ChannelUsers,
     pub unread: u32,
     pub locked: bool,
     pub last_read_message_id: Option<MessageId>,
@@ -94,23 +100,21 @@ fn map_status(status: &khannel_core::client::types::ServerStatus) -> UiServerSta
     }
 }
 
-/// 사이드바 채널 표시 순서: 채널명 오름차순.
-/// IRC 채널명은 대소문자를 구분하지 않으므로 소문자 기준으로 먼저 비교하고,
+/// 사이드바 이름 비교: 자연 순서(`#2` < `#10`)로, 대소문자는 무시하고 먼저 비교한다.
 /// 같으면 원래 이름으로 비교해 순서를 결정적으로 만든다.
-fn channel_order(a: &Channel, b: &Channel) -> std::cmp::Ordering {
-    a.name
-        .to_lowercase()
-        .cmp(&b.name.to_lowercase())
-        .then_with(|| a.name.cmp(&b.name))
+fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    alphanumeric_sort::compare_str(a.to_lowercase(), b.to_lowercase())
+        .then_with(|| alphanumeric_sort::compare_str(a, b))
 }
 
-/// 사이드바 서버 표시 순서: 서버 이름 오름차순(대소문자 무시), 같으면 ID 순.
+/// 사이드바 채널 표시 순서: 채널명 자연 순서 (IRC 채널명은 대소문자를 구분하지 않는다).
+fn channel_order(a: &Channel, b: &Channel) -> std::cmp::Ordering {
+    name_order(&a.name, &b.name)
+}
+
+/// 사이드바 서버 표시 순서: 서버 이름 자연 순서, 같으면 ID 순.
 fn server_order(a: &Server, b: &Server) -> std::cmp::Ordering {
-    a.name
-        .to_lowercase()
-        .cmp(&b.name.to_lowercase())
-        .then_with(|| a.name.cmp(&b.name))
-        .then_with(|| a.id.cmp(&b.id))
+    name_order(&a.name, &b.name).then_with(|| a.id.cmp(&b.id))
 }
 
 /// IRC 닉 비교 — 대소문자를 구분하지 않는다.
@@ -240,7 +244,15 @@ pub struct IrcModel {
     nick_errors: HashMap<ServerId, String>,
     // 닉네임 변경 요청 ↔ 성공 매칭 — 닉변 모달의 성공 자동 닫힘 용도.
     nick_change: NickChangeTracker,
+    /// 사용자가 입장을 요청해 JOIN 응답을 기다리는 채널 (`focus_key`). 응답이 오면 그 채널로 전환한다.
+    /// 접속 시 자동 재입장은 여기 없으므로 화면을 바꾸지 않는다
+    pending_focus: HashSet<String>,
     api: Arc<UiApi>,
+}
+
+/// `pending_focus` 키 — IRC 채널명은 대소문자를 구분하지 않으므로 소문자로 (서버가 돌려준 표기와 맞추기 위함)
+fn focus_key(server_id: &ServerId, channel: &str) -> String {
+    format!("{server_id}:{}", channel.to_lowercase())
 }
 
 impl IrcModel {
@@ -253,6 +265,7 @@ impl IrcModel {
             current_channel_id: None,
             nick_errors: HashMap::new(),
             nick_change: NickChangeTracker::default(),
+            pending_focus: HashSet::new(),
             api: api.clone(),
         };
 
@@ -277,6 +290,12 @@ impl IrcModel {
                     for channel in &info.channels {
                         m.sync_channel_from_core(info.id, channel.name(), channel.locked());
                     }
+                }
+                // 첫 화면: 아직 아무것도 선택하지 않았으면 사이드바 맨 위 서버를 선택해 둔다
+                if m.current_server_id.is_none()
+                    && let Some(first) = m.sorted_servers().first().map(|s| s.id)
+                {
+                    m.current_server_id = Some(first);
                 }
                 cx.notify();
             });
@@ -343,6 +362,7 @@ impl IrcModel {
                 nickname: d.nickname,
                 status: map_status(&d.status),
                 server_messages: Vec::new(),
+                prefix_symbols: DEFAULT_PREFIX_SYMBOLS.to_string(),
             },
         );
     }
@@ -350,6 +370,19 @@ impl IrcModel {
     fn on_server_status(&mut self, p: ServerStatusPayload) {
         if let Some(server) = self.servers.get_mut(&p.server_id) {
             server.status = map_status(&p.status);
+        }
+        // 연결이 끊기면 유저 목록은 더 이상 맞지 않는다 — 재입장 후 NAMES로 다시 채워진다.
+        // 응답을 못 받은 입장 요청도 버린다 (다음 접속의 자동 재입장이 화면을 바꾸지 않게)
+        if matches!(p.status, ServerStatus::Disconnected | ServerStatus::Failed) {
+            let prefix = format!("{}:", p.server_id);
+            self.pending_focus.retain(|key| !key.starts_with(&prefix));
+            for channel in self
+                .channels
+                .values_mut()
+                .filter(|c| c.server_id == p.server_id)
+            {
+                channel.users.clear();
+            }
         }
     }
 
@@ -442,10 +475,15 @@ impl IrcModel {
                     let own_join = nick_eq(&nick, &server.nickname);
 
                     if let Some(channel) = self.channels.get_mut(&channel_id) {
-                        channel.users.insert(nick.clone());
+                        channel.users.insert(&nick);
 
-                        // 내 Join이면 현재 채널로 자동 전환
-                        if own_join {
+                        // 사용자가 요청한 입장이면 그 채널로 전환한다. 접속 시 자동 재입장은
+                        // 보던 화면을 유지한다 (채널마다 화면이 바뀌면 그동안 쓸 수 없다)
+                        if own_join
+                            && self
+                                .pending_focus
+                                .remove(&focus_key(&server_id, &channel.name))
+                        {
                             self.current_server_id = Some(server_id);
                             self.current_channel_id = Some(channel_id.clone());
                         }
@@ -502,10 +540,19 @@ impl IrcModel {
                 channel,
                 by,
                 modes,
+                member_changes,
             } => {
                 // 입장한 채널에만 남긴다 (모드 변경으로 채널을 만들지 않음)
                 let channel_id = self.get_channel_id(&server_id, &channel);
-                if self.channels.contains_key(&channel_id) {
+                let symbols = self
+                    .servers
+                    .get(&server_id)
+                    .map(|s| s.prefix_symbols.clone())
+                    .unwrap_or_default();
+                if let Some(channel) = self.channels.get_mut(&channel_id) {
+                    for change in &member_changes {
+                        channel.users.apply_mode(change, &symbols);
+                    }
                     self.add_message(
                         server_id,
                         channel_id,
@@ -615,8 +662,7 @@ impl IrcModel {
                 for channel_name in targets {
                     let channel_id = self.get_channel_id(&server_id, &channel_name);
                     if let Some(channel) = self.channels.get_mut(&channel_id) {
-                        channel.users.remove(&old_nick);
-                        channel.users.insert(new_nick.clone());
+                        channel.users.rename(&old_nick, &new_nick);
 
                         self.add_message(
                             server_id,
@@ -663,11 +709,15 @@ impl IrcModel {
                 server_id,
                 channel,
                 users,
+                prefix_symbols,
             } => {
+                if let Some(server) = self.servers.get_mut(&server_id) {
+                    server.prefix_symbols = prefix_symbols;
+                }
                 // 입장한 채널에만 반영한다 (인자 없는 NAMES의 `*` 등으로 채널을 만들지 않음)
                 let channel_id = self.get_channel_id(&server_id, &channel);
                 if let Some(channel) = self.channels.get_mut(&channel_id) {
-                    channel.users = users.into_iter().collect();
+                    channel.users.replace(users);
                 }
             }
             P::Error {
@@ -699,6 +749,7 @@ impl IrcModel {
                 channel,
                 reason,
             } => {
+                self.pending_focus.remove(&focus_key(&server_id, &channel));
                 // 이미 열려 있던 채널(예: 강퇴 후 재입장 시도)이면 코어처럼 지운다
                 let channel_id = self.get_channel_id(&server_id, &channel);
                 if self.channels.remove(&channel_id).is_some() {
@@ -735,7 +786,7 @@ impl IrcModel {
                 Channel {
                     server_id,
                     name: channel_name.to_string(),
-                    users: BTreeSet::new(),
+                    users: ChannelUsers::default(),
                     unread: 0,
                     locked: false,
                     last_read_message_id: None,
@@ -771,7 +822,7 @@ impl IrcModel {
                     Channel {
                         server_id,
                         name: channel_name.to_string(),
-                        users: BTreeSet::new(),
+                        users: ChannelUsers::default(),
                         unread: 0,
                         locked,
                         last_read_message_id: None,
@@ -878,6 +929,9 @@ impl IrcModel {
             tracing::warn!("join_channel failed: {}", e);
             e.to_string()
         });
+        if result.is_ok() {
+            self.pending_focus.insert(focus_key(&server_id, channel));
+        }
         cx.notify();
         result
     }
@@ -918,6 +972,27 @@ impl IrcModel {
             self.remove_unread_message(&channel);
         }
         cx.notify();
+    }
+
+    /// `nick`이 그 서버에서의 내 닉인지 (대소문자 무시)
+    pub fn is_own_nick(&self, server_id: &ServerId, nick: &str) -> bool {
+        self.servers
+            .get(server_id)
+            .is_some_and(|server| nick_eq(&server.nickname, nick))
+    }
+
+    /// 닉과의 DM(query) 버퍼를 열고 그 버퍼로 전환한다 (유저 목록 더블클릭/메뉴).
+    /// 내 닉이면 열지 않는다 (자신과의 대화 버퍼는 만들지 않는다)
+    pub fn open_query(&mut self, server_id: ServerId, nick: &str, cx: &mut Context<Self>) {
+        if self.is_own_nick(&server_id, nick) {
+            return;
+        }
+        self.ensure_channel(server_id, nick);
+        let channel_id = self.get_channel_id(&server_id, nick);
+        if self.channels.contains_key(&channel_id) {
+            self.current_server_id = Some(server_id);
+            self.set_current_channel(Some(channel_id), cx);
+        }
     }
 
     pub fn get_channel_id(&self, server_id: &ServerId, channel_name: &str) -> String {
@@ -967,6 +1042,18 @@ impl IrcModel {
         self.current_channel_id
             .as_ref()
             .and_then(|id| self.channels.get(id))
+    }
+
+    /// 현재 채널의 유저 목록(표시 순서)과 서버 ID. 채널 버퍼일 때만 Some — 서버 버퍼/DM은 None
+    pub fn current_channel_users(&self) -> Option<(ServerId, Vec<ChannelUser>)> {
+        let channel = self
+            .current_channel()
+            .filter(|c| is_channel_name(&c.name))?;
+        let symbols = self
+            .servers
+            .get(&channel.server_id)
+            .map_or(DEFAULT_PREFIX_SYMBOLS, |s| s.prefix_symbols.as_str());
+        Some((channel.server_id, channel.users.sorted(symbols)))
     }
 
     pub fn current_messages(&self) -> Option<&Vec<ChatMessage>> {
@@ -1155,7 +1242,7 @@ mod tests {
         Channel {
             server_id: uuid::Uuid::nil(),
             name: name.to_string(),
-            users: BTreeSet::new(),
+            users: ChannelUsers::default(),
             unread: 0,
             locked: false,
             last_read_message_id: None,
@@ -1173,6 +1260,7 @@ mod tests {
             nickname: "nick".to_string(),
             status: UiServerStatus::Disconnected,
             server_messages: Vec::new(),
+            prefix_symbols: DEFAULT_PREFIX_SYMBOLS.to_string(),
         }
     }
 
@@ -1305,6 +1393,20 @@ mod tests {
         channels.sort_by(channel_order);
         let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["#a", "#gpui", "#Rust", "#rust", "#Zed"]);
+    }
+
+    #[test]
+    fn channels_sort_in_natural_order() {
+        let mut channels: Vec<Channel> = ["#20", "#2", "#test10", "#10", "#1", "#Test2", "#11"]
+            .into_iter()
+            .map(channel)
+            .collect();
+        channels.sort_by(channel_order);
+        let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["#1", "#2", "#10", "#11", "#20", "#Test2", "#test10"]
+        );
     }
 
     #[test]

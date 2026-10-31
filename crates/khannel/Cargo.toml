@@ -30,6 +30,8 @@ uuid.workspace = true
 tracing = { workspace = true }
 directories = "6"
 unicode-segmentation = "1"
+# 사이드바 서버/채널 자연 정렬 (#2 < #10)
+alphanumeric-sort = "1.5.8"
 
 # macOS .app/.dmg 패키징 (cargo-packager). 경로는 이 파일 기준. 보통 `dist/macos/package.sh`로 실행한다
 # (dmg 이름 정리 + 공증까지). 서명은 cargo-packager가 아니라 dmg를 만들기 직전 훅(`sign-app.sh`)에서 한다 —

@@ -4,6 +4,7 @@
 
 mod action;
 mod api;
+mod assets;
 mod model;
 mod overlay;
 mod theme;
@@ -82,7 +83,7 @@ fn main() {
     let api = Arc::new(UiApi::new(rt, khannel_api, ui_sink));
 
     // 2. GPUI 앱 실행
-    let app = application();
+    let app = application().with_assets(assets::Assets);
 
     // macOS: 창이 모두 닫힌 뒤 Dock 아이콘을 클릭하면 창을 다시 연다.
     // (macOS 기본 종료 정책은 마지막 창을 닫아도 앱을 종료하지 않는다. Linux는 마지막 창을

@@ -67,6 +67,14 @@ struct ChannelMenuState {
     position: Point<Pixels>,
 }
 
+/// 사이드바 유저 목록의 우클릭 메뉴 state
+#[derive(Debug, Clone)]
+struct UserMenuState {
+    server_id: ServerId,
+    nick: String,
+    position: Point<Pixels>,
+}
+
 // ==================================== ChatApp ====================================
 
 pub struct ChatApp {
@@ -86,6 +94,7 @@ pub struct ChatApp {
 
     server_menu: Option<ServerMenuState>,
     channel_menu: Option<ChannelMenuState>,
+    user_menu: Option<UserMenuState>,
 
     /// 사이드바 표시 여부 (상단 바 토글 버튼, 저장하지 않음)
     sidebar_open: bool,
@@ -127,6 +136,7 @@ impl ChatApp {
                         position: *position,
                     });
                     this.channel_menu = None;
+                    this.user_menu = None;
                     cx.notify();
                 }
                 SidebarEvent::ChannelContextMenu {
@@ -142,6 +152,21 @@ impl ChatApp {
                         position: *position,
                     });
                     this.server_menu = None;
+                    this.user_menu = None;
+                    cx.notify();
+                }
+                SidebarEvent::UserContextMenu {
+                    server_id,
+                    nick,
+                    position,
+                } => {
+                    this.user_menu = Some(UserMenuState {
+                        server_id: *server_id,
+                        nick: nick.clone(),
+                        position: *position,
+                    });
+                    this.server_menu = None;
+                    this.channel_menu = None;
                     cx.notify();
                 }
             },
@@ -190,6 +215,7 @@ impl ChatApp {
             show_remove_modal: false,
             server_menu: None,
             channel_menu: None,
+            user_menu: None,
             sidebar_open: true,
             title_drag_pending: false,
         }
@@ -211,6 +237,7 @@ impl ChatApp {
         self.show_remove_modal = true;
         self.server_menu = None;
         self.channel_menu = None;
+        self.user_menu = None;
         self.remove_modal.update(cx, |modal, cx| {
             modal.open_for(server_id, cx);
             modal.focus(window, cx);
@@ -222,6 +249,7 @@ impl ChatApp {
         self.show_server_modal = true;
         self.server_menu = None;
         self.channel_menu = None;
+        self.user_menu = None;
         self.server_modal
             .update(cx, |modal, cx| modal.reset(window, cx));
         self.server_modal
@@ -233,6 +261,7 @@ impl ChatApp {
         self.show_channel_modal = true;
         self.server_menu = None;
         self.channel_menu = None;
+        self.user_menu = None;
         self.channel_modal
             .update(cx, |modal, cx| modal.reset(window, cx));
         self.channel_modal
@@ -249,6 +278,7 @@ impl ChatApp {
         self.show_nick_modal = true;
         self.server_menu = None;
         self.channel_menu = None;
+        self.user_menu = None;
         self.nick_modal
             .update(cx, |modal, cx| modal.open_for(Some(server_id), window, cx));
         self.nick_modal
@@ -257,9 +287,10 @@ impl ChatApp {
     }
 
     pub fn close_menus(&mut self, cx: &mut Context<Self>) {
-        if self.server_menu.is_some() || self.channel_menu.is_some() {
+        if self.server_menu.is_some() || self.channel_menu.is_some() || self.user_menu.is_some() {
             self.server_menu = None;
             self.channel_menu = None;
+            self.user_menu = None;
             cx.notify();
         }
     }
@@ -437,6 +468,56 @@ impl ChatApp {
                     move |_, _, cx| {
                         chat.update(cx, |this, cx| this.close_menus(cx));
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(name.clone()));
+                    }
+                }),
+            );
+
+        anchored_menu(state.position, menu)
+    }
+
+    // ── 유저 컨텍스트 메뉴 (사이드바 유저 목록 우클릭: Query / Copy Nickname) ──
+
+    fn render_user_menu(
+        &mut self,
+        state: UserMenuState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = Theme::current(cx);
+        let model = self.model.clone();
+        let chat = cx.entity();
+        // 내 닉에는 DM을 열 수 없으므로 Query 항목을 두지 않는다
+        let is_own = model.read(cx).is_own_nick(&state.server_id, &state.nick);
+
+        let menu = context_menu_container(theme)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menus(cx)))
+            .when(!is_own, |menu| {
+                menu.child(
+                    context_menu_item("menu-query", "💬", "Query", MenuItemStyle::Accent, theme)
+                        .on_click({
+                            let chat = chat.clone();
+                            let server_id = state.server_id;
+                            let nick = state.nick.clone();
+                            move |_, _, cx| {
+                                chat.update(cx, |this, cx| this.close_menus(cx));
+                                model.update(cx, |m, cx| m.open_query(server_id, &nick, cx));
+                            }
+                        }),
+                )
+                .child(context_menu_separator(theme))
+            })
+            .child(
+                context_menu_item(
+                    "menu-copy-nick",
+                    "📋",
+                    "Copy Nickname",
+                    MenuItemStyle::Normal,
+                    theme,
+                )
+                .on_click({
+                    let nick = state.nick.clone();
+                    move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(nick.clone()));
                     }
                 }),
             );
@@ -658,6 +739,7 @@ impl Render for ChatApp {
 
         let server_menu = self.server_menu;
         let channel_menu = self.channel_menu.clone();
+        let user_menu = self.user_menu.clone();
 
         let corner_controls = self.render_corner_controls(window, cx);
         let close_control = self.render_close_control(window, cx);
@@ -718,7 +800,8 @@ impl Render for ChatApp {
             })
             // ── 컨텍스트 메뉴 ──
             .children(server_menu.map(|state| self.render_server_menu(state, cx)))
-            .children(channel_menu.map(|state| self.render_channel_menu(state, cx)));
+            .children(channel_menu.map(|state| self.render_channel_menu(state, cx)))
+            .children(user_menu.map(|state| self.render_user_menu(state, cx)));
 
         // Linux CSD: 그림자/테두리/가장자리 리사이즈 (macOS는 그대로 통과)
         window_frame(content, window, cx)
