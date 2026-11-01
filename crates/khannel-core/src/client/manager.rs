@@ -49,17 +49,23 @@ impl KhannelManager {
         &self.khannel_state
     }
 
-    fn run_server(&self, server_id: ServerId) -> anyhow::Result<()> {
+    /// 액터를 띄운다.
+    /// 
+    /// `retry_initial`: 첫 접속 실패도 재시도할지 여부 (`ServerActor::retry_initial`)
+    fn run_server(&self, server_id: ServerId, retry_initial: bool) -> anyhow::Result<()> {
         let server = self
             .khannel_state
             .get_server(server_id)
             .context("Server not found")?;
 
+        // 재연결 대기 중 '지금 연결'이면 이미 재시도 중이던 서버이므로 실패해도 계속 재시도한다
+        let retry_initial = retry_initial || server.status() == ServerStatus::Reconnecting;
         let actor = ServerActor::new(
             server_id,
             server.clone(),
             self.ui_sink.clone(),
             Arc::downgrade(&self.khannel_state),
+            retry_initial,
         );
         // spawn과 Connecting 전이를 원자적으로 수행 (ServerState::start_connecting 참고)
         if !server.start_connecting(|| {
@@ -104,7 +110,8 @@ impl KhannelManager {
             sid
         };
 
-        self.run_server(server_id)?;
+        // 사용자가 직접 누른 접속: 첫 접속 실패는 바로 알린다
+        self.run_server(server_id, false)?;
         emit_server_status(&self.ui_sink, server_id, ServerStatus::Connecting);
 
         Ok(())
@@ -188,6 +195,7 @@ impl KhannelManager {
         Ok(())
     }
 
+    /// 연결 시도 또는 재연결 대기를 취소한다.
     pub fn cancel_connect(&self, server_id: ServerId) -> anyhow::Result<()> {
         if let Some(server) = self.khannel_state.get_server(server_id) {
             // 사용자 취소이므로 실제 전이 결과(Disconnected)를 그대로 알린다
@@ -210,7 +218,8 @@ impl KhannelManager {
             .collect();
         debug!(server_id = ?server_ids, "Auto-connecting servers");
         for server_id in server_ids {
-            let _ = self.run_server(server_id);
+            // 앱 시작 직후엔 네트워크가 아직 안 올라왔을 수 있어 첫 접속 실패도 재시도한다
+            let _ = self.run_server(server_id, true);
         }
     }
 

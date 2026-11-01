@@ -15,6 +15,8 @@ pub enum ServerStatus {
     Registering,
     Disconnected,
     Disconnecting,
+    /// 연결이 끊겨 다시 연결하기 전 대기 중 (backoff)
+    Reconnecting,
     Failed,
 }
 

@@ -30,6 +30,10 @@ pub enum ServerRuntime {
     Disconnecting {
         handle: JoinHandle<()>,
     },
+    /// 연결이 끊겨 다시 연결하기 전 대기 중. 액터 task는 살아 있고(재시도 루프), 커맨드 채널은 없다.
+    Reconnecting {
+        handle: JoinHandle<()>,
+    },
     Failed {
         error: String,
     },
@@ -43,6 +47,7 @@ impl ServerRuntime {
             ServerRuntime::Registering { .. } => ServerStatus::Registering,
             ServerRuntime::Connected { .. } => ServerStatus::Connected,
             ServerRuntime::Disconnecting { .. } => ServerStatus::Disconnecting,
+            ServerRuntime::Reconnecting { .. } => ServerStatus::Reconnecting,
             ServerRuntime::Failed { .. } => ServerStatus::Failed,
         }
     }
@@ -60,7 +65,8 @@ impl ServerRuntime {
                 let _ = timeout(TIMEOUT, handle).await;
             }
 
-            ServerRuntime::Connecting { handle } => {
+            // 대기/접속 단계엔 서버 세션이 없으니 QUIT 없이 abort로 끝낸다
+            ServerRuntime::Connecting { handle } | ServerRuntime::Reconnecting { handle } => {
                 handle.abort();
                 let _ = handle.await;
             }
@@ -188,6 +194,7 @@ impl ServerState {
             ServerRuntime::Connecting { .. }
                 | ServerRuntime::Registering { .. }
                 | ServerRuntime::Connected { .. }
+                | ServerRuntime::Reconnecting { .. }
         )
     }
 
@@ -227,16 +234,17 @@ impl ServerState {
     /// spawn을 runtime 락 안에서 수행하므로 액터의 다음 전이(registering/failed)는 반드시
     /// Connecting 확정 이후에 일어난다. (spawn 후 전이하던 이전 구현은 빠른 연결 실패 시
     /// Failed를 `Connecting{종료된 handle}`로 덮어써 재연결이 영구 거부됐다.)
+    /// 재연결 대기(Reconnecting) 중이면 대기 중인 액터를 abort하고 새로 띄운다 (지금 연결).
     /// 이미 활성/Disconnecting 상태면 spawn하지 않고 false를 반환한다.
     pub fn start_connecting(&self, spawn: impl FnOnce() -> JoinHandle<()>) -> bool {
         let mut guard = self.runtime.lock().unwrap();
         match &*guard {
-            ServerRuntime::Disconnected | ServerRuntime::Failed { .. } => {
-                *guard = ServerRuntime::Connecting { handle: spawn() };
-                true
-            }
-            _ => false,
+            ServerRuntime::Disconnected | ServerRuntime::Failed { .. } => {}
+            ServerRuntime::Reconnecting { handle } => handle.abort(),
+            _ => return false,
         }
+        *guard = ServerRuntime::Connecting { handle: spawn() };
+        true
     }
 
     /// 상태가 Connecting이 아니면(예: 취소됨) 현재 상태를 유지하고 tx는 버린다.
@@ -261,6 +269,39 @@ impl ServerState {
         }
     }
 
+    /// 세션이 끊겨 재연결 대기로: Connecting/Registering/Connected → Reconnecting (tx는 버린다).
+    /// 그 밖의 상태(사용자가 이미 끊었거나 취소함)면 현재 상태를 유지하고 false.
+    pub fn transition_to_reconnecting(&self) -> bool {
+        let mut guard = self.runtime.lock().unwrap();
+        match std::mem::take(&mut *guard) {
+            ServerRuntime::Connecting { handle }
+            | ServerRuntime::Registering { handle, .. }
+            | ServerRuntime::Connected { handle, .. } => {
+                *guard = ServerRuntime::Reconnecting { handle };
+                true
+            }
+            other => {
+                *guard = other;
+                false
+            }
+        }
+    }
+
+    /// 재연결 대기가 끝나 다시 접속: Reconnecting → Connecting. 그 밖의 상태면 유지하고 false.
+    pub fn transition_to_connecting(&self) -> bool {
+        let mut guard = self.runtime.lock().unwrap();
+        match std::mem::take(&mut *guard) {
+            ServerRuntime::Reconnecting { handle } => {
+                *guard = ServerRuntime::Connecting { handle };
+                true
+            }
+            other => {
+                *guard = other;
+                false
+            }
+        }
+    }
+
     pub fn transition_to_disconnected(&self) {
         *self.runtime.lock().unwrap() = ServerRuntime::Disconnected;
     }
@@ -277,18 +318,24 @@ impl ServerState {
                 let _ = tx.send(ServerCommand::Quit);
                 *guard = ServerRuntime::Disconnecting { handle };
             }
+            // 접속 시도/재연결 대기 중엔 서버 세션이 없으므로 그대로 멈춘다
+            ServerRuntime::Connecting { handle } | ServerRuntime::Reconnecting { handle } => {
+                handle.abort();
+                *guard = ServerRuntime::Disconnected;
+            }
             other => {
                 *guard = other;
             }
         }
     }
 
-    /// 연결 시도(Connecting) 중이면 취소하고 true. 그 밖의 상태면 현재 상태를 유지하고 false.
+    /// 연결 시도(Connecting) 또는 재연결 대기(Reconnecting) 중이면 취소하고 true.
+    /// 그 밖의 상태면 현재 상태를 유지하고 false.
     /// (UI 상태가 늦어 이미 Registering 등으로 넘어간 뒤 취소가 들어와도 세션을 버리지 않는다)
     pub fn abort_connecting(&self) -> bool {
         let mut guard = self.runtime.lock().unwrap();
         match std::mem::take(&mut *guard) {
-            ServerRuntime::Connecting { handle } => {
+            ServerRuntime::Connecting { handle } | ServerRuntime::Reconnecting { handle } => {
                 handle.abort();
                 *guard = ServerRuntime::Disconnected;
                 true
@@ -447,6 +494,74 @@ mod tests {
         server.transition_to_failed("x".to_string());
         assert!(!server.abort_connecting());
         assert_eq!(server.status(), ServerStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn reconnecting_transitions_keep_actor_handle() {
+        let server = test_server();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Connected → Reconnecting: 커맨드 채널은 버린다
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        server.transition_to_registering(tx);
+        server.transition_to_connected();
+        assert!(server.transition_to_reconnecting());
+        assert_eq!(server.status(), ServerStatus::Reconnecting);
+        assert!(server.is_active());
+        assert!(server.send_command(ServerCommand::Quit).is_err());
+
+        // Reconnecting → Connecting → (접속 실패) Reconnecting
+        assert!(server.transition_to_connecting());
+        assert_eq!(server.status(), ServerStatus::Connecting);
+        assert!(server.transition_to_reconnecting());
+        assert_eq!(server.status(), ServerStatus::Reconnecting);
+
+        // Reconnecting이 아니면 connecting 전이는 no-op
+        server.transition_to_disconnected();
+        assert!(!server.transition_to_connecting());
+        assert!(!server.transition_to_reconnecting());
+        assert_eq!(server.status(), ServerStatus::Disconnected);
+    }
+
+    /// 재연결 대기 중 취소/끊기는 대기 중인 액터를 멈추고 Disconnected로 만든다.
+    #[tokio::test]
+    async fn cancel_and_disconnect_stop_reconnecting() {
+        let server = test_server();
+        let pending = || tokio::spawn(std::future::pending::<()>());
+
+        assert!(server.start_connecting(pending));
+        assert!(server.transition_to_reconnecting());
+        assert!(server.abort_connecting());
+        assert_eq!(server.status(), ServerStatus::Disconnected);
+
+        assert!(server.start_connecting(pending));
+        assert!(server.transition_to_reconnecting());
+        server.disconnect();
+        assert_eq!(server.status(), ServerStatus::Disconnected);
+    }
+
+    /// 재연결 대기 중 '지금 연결'은 대기 중인 액터를 abort하고 새 액터를 띄운다.
+    #[tokio::test]
+    async fn start_connecting_replaces_reconnecting_actor() {
+        let server = test_server();
+        let (old_tx, old_rx) = tokio::sync::oneshot::channel::<()>();
+        assert!(server.start_connecting(|| {
+            tokio::spawn(async move {
+                let _keep = old_tx;
+                std::future::pending::<()>().await
+            })
+        }));
+        assert!(server.transition_to_reconnecting());
+
+        assert!(server.start_connecting(|| tokio::spawn(async {})));
+        assert_eq!(server.status(), ServerStatus::Connecting);
+        // 이전 액터가 abort돼 sender가 drop된다
+        assert!(
+            timeout(Duration::from_secs(5), old_rx)
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 
     /// 액터가 락 대기 없이 곧바로 실패를 기록하려 해도 Connecting 확정 이후에 반영된다.

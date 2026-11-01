@@ -492,6 +492,7 @@ pub enum ServerStatusValue {
     Registering,
     Disconnected,
     Disconnecting,
+    Reconnecting,
     Failed,
 }
 
