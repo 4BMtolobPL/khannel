@@ -10,6 +10,8 @@
 //!   첫 미확인 메시지 위치에 고정해 그 채널을 보는 동안 유지한다. (실시간 방식은 미확인
 //!   메시지가 화면 안에 다 들어오면 진입 즉시 lastRead가 갱신되어 divider가 사라졌다.)
 
+use std::collections::HashSet;
+
 use gpui::{
     Context, Entity, FontWeight, IntoElement, ListAlignment, ListState, ParentElement, Render,
     Styled, Window, div, list, prelude::*, px,
@@ -30,6 +32,8 @@ pub struct MessageView {
     /// 채널 진입 시 `first_unread_index`로 계산하고, 방문 중에는 위로 스크롤해 둔 상태에서
     /// 새 메시지가 오면 `unread_from`으로 생성한다(이미 있으면 유지).
     divider_before: Option<usize>,
+    /// 마지막으로 렌더한 숨김 메시지 종류 — 필터가 바뀌면 항목 높이를 다시 잰다
+    rendered_filter: HashSet<MessageType>,
 }
 
 /// 첫 미확인 메시지 index — lastRead 다음 메시지(lastRead가 없으면 처음)부터를 미확인으로 본다.
@@ -113,6 +117,7 @@ impl MessageView {
             list_state,
             rendered: None,
             divider_before: None,
+            rendered_filter: HashSet::new(),
         }
     }
 
@@ -153,6 +158,13 @@ impl MessageView {
     /// - 버퍼 전환: reset + 마지막 읽은 위치(또는 맨 아래)로 스크롤 복원
     /// - 메시지 추가: splice로 항목 수 반영 (Tail following은 유지)
     fn sync_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 숨긴 메시지는 높이 0인 항목으로 그리므로(인덱스 유지) 필터가 바뀌면 높이만 다시 잰다
+        let hidden = self.model.read(cx).hidden_message_types();
+        if *hidden != self.rendered_filter {
+            self.rendered_filter = hidden.clone();
+            self.list_state.remeasure();
+        }
+
         let channel_id = self.model.read(cx).visible_buffer_key();
         let count = self
             .model
@@ -244,9 +256,18 @@ impl MessageView {
     fn render_item(
         message: &crate::model::ChatMessage,
         show_divider: bool,
+        visible: bool,
         own_nickname: &Option<String>,
         theme: Theme,
     ) -> gpui::AnyElement {
+        // 숨긴 메시지는 목록에서 빼지 않고 높이 0으로 그린다 — 인덱스(divider, splice)가 그대로 유지된다.
+        // divider 위치는 숨김과 상관없이 그린다
+        if !visible {
+            return div()
+                .w_full()
+                .when(show_divider, |d| d.child(Self::render_divider(theme)))
+                .into_any();
+        }
         let row = match message.kind {
             MessageType::User => {
                 // Svelte: 내 닉네임이면 `< {nick}>`, 아니면 `<@{nick}>`
@@ -304,7 +325,16 @@ impl MessageView {
                             .child(message.content.clone()),
                     )
             }
-            MessageType::System => div()
+            // 나머지 종류(join/part/notice 등)는 모두 시스템 행 모양
+            MessageType::Notice
+            | MessageType::Join
+            | MessageType::Part
+            | MessageType::Quit
+            | MessageType::Nick
+            | MessageType::Mode
+            | MessageType::Kick
+            | MessageType::Topic
+            | MessageType::System => div()
                 .mb_1()
                 .flex()
                 .min_w_0()
@@ -356,13 +386,20 @@ impl Render for MessageView {
                 // 메시지 목록을 clone하지 않고, 가상화된 list가 실제로 그리는 항목만
                 // 모델에서 직접 읽는다 (이전: 렌더마다 Vec 전체 clone → 메시지당 O(n)).
                 list(self.list_state.clone(), move |index, _window, cx| {
-                    let Some(messages) = model_for_items.read(cx).visible_messages() else {
+                    let model = model_for_items.read(cx);
+                    let Some(messages) = model.visible_messages() else {
                         return div().into_any();
                     };
                     let Some(message) = messages.get(index) else {
                         return div().into_any();
                     };
-                    Self::render_item(message, divider_before == Some(index), &own_nickname, theme)
+                    Self::render_item(
+                        message,
+                        divider_before == Some(index),
+                        model.is_message_type_visible(message.kind),
+                        &own_nickname,
+                        theme,
+                    )
                 })
                 .flex_1(), // 부모가 flex (column)이므로 남은 높이를 채운다
             )
@@ -451,6 +488,14 @@ mod tests {
             message("b", MessageType::Action),
         ];
         assert_eq!(unread_from(&list, 1, None), Some(1));
+    }
+
+    #[test]
+    fn event_messages_are_not_user_messages() {
+        for kind in MessageType::ALL {
+            let expected = matches!(kind, MessageType::User | MessageType::Action);
+            assert_eq!(kind.is_user_message(), expected, "{kind:?}");
+        }
     }
 
     #[test]

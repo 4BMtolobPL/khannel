@@ -117,11 +117,11 @@ impl Render for InputBar {
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.panel)
-            .p(px(12.))
+            .p(px(8.))
             .child(
                 div()
                     .flex()
-                    .gap_x(px(8.))
+                    .gap_x(px(6.))
                     .child(
                         self.render_button("lock", if is_locked { "🔒" } else { "🔓" }, theme)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {

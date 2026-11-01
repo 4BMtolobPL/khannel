@@ -24,16 +24,57 @@ pub use users::{ChannelUser, ChannelUsers, DEFAULT_PREFIX_SYMBOLS};
 
 pub type MessageId = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MessageType {
     User,
     /// `/me` 액션 (`* nick 내용`)
     Action,
+    Notice,
+    Join,
+    Part,
+    Quit,
+    Nick,
+    Mode,
+    Kick,
+    Topic,
+    /// 에러·서버 메시지 등 나머지
     System,
 }
 
 impl MessageType {
+    /// 표시 필터 팝업의 행 순서
+    pub const ALL: [MessageType; 11] = [
+        Self::User,
+        Self::Action,
+        Self::Notice,
+        Self::Join,
+        Self::Part,
+        Self::Quit,
+        Self::Nick,
+        Self::Mode,
+        Self::Kick,
+        Self::Topic,
+        Self::System,
+    ];
+
+    /// 표시 필터 팝업의 행 문구
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::User => "일반 메시지",
+            Self::Action => "액션 (/me)",
+            Self::Notice => "Notice",
+            Self::Join => "Join",
+            Self::Part => "Part",
+            Self::Quit => "Quit",
+            Self::Nick => "Nick 변경",
+            Self::Mode => "Mode 변경",
+            Self::Kick => "Kick",
+            Self::Topic => "Topic",
+            Self::System => "에러·서버 메시지",
+        }
+    }
+
     /// 사람이 보낸 대화 메시지인지 (unread/divider 집계 대상)
     pub fn is_user_message(self) -> bool {
         matches!(self, Self::User | Self::Action)
@@ -247,6 +288,8 @@ pub struct IrcModel {
     /// 사용자가 입장을 요청해 JOIN 응답을 기다리는 채널 (`focus_key`). 응답이 오면 그 채널로 전환한다.
     /// 접속 시 자동 재입장은 여기 없으므로 화면을 바꾸지 않는다
     pending_focus: HashSet<String>,
+    /// 숨긴 메시지 종류 (전역, 저장하지 않음). 비어 있으면 전부 표시
+    hidden_message_types: HashSet<MessageType>,
     api: Arc<UiApi>,
 }
 
@@ -266,6 +309,7 @@ impl IrcModel {
             nick_errors: HashMap::new(),
             nick_change: NickChangeTracker::default(),
             pending_focus: HashSet::new(),
+            hidden_message_types: HashSet::new(),
             api: api.clone(),
         };
 
@@ -449,7 +493,7 @@ impl IrcModel {
                 timestamp,
             } => {
                 let message = ChatMessage {
-                    kind: MessageType::System,
+                    kind: MessageType::Notice,
                     id: uuid::Uuid::now_v7().to_string(),
                     nickname: None,
                     content: notice_content(nick.as_deref(), &content),
@@ -492,7 +536,7 @@ impl IrcModel {
                             server_id,
                             channel_id,
                             ChatMessage {
-                                kind: MessageType::System,
+                                kind: MessageType::Join,
                                 id: uuid::Uuid::now_v7().to_string(),
                                 nickname: None,
                                 content: format!("{} joined the channel", nick),
@@ -525,7 +569,7 @@ impl IrcModel {
                             server_id,
                             channel_id,
                             ChatMessage {
-                                kind: MessageType::System,
+                                kind: MessageType::Part,
                                 id: uuid::Uuid::now_v7().to_string(),
                                 nickname: None,
                                 content: format!("{} left the channel", nick),
@@ -557,7 +601,7 @@ impl IrcModel {
                         server_id,
                         channel_id,
                         ChatMessage {
-                            kind: MessageType::System,
+                            kind: MessageType::Mode,
                             id: uuid::Uuid::now_v7().to_string(),
                             nickname: None,
                             content: mode_message(by.as_deref(), &modes),
@@ -589,7 +633,7 @@ impl IrcModel {
                         server_id,
                         channel_id,
                         ChatMessage {
-                            kind: MessageType::System,
+                            kind: MessageType::Kick,
                             id: uuid::Uuid::now_v7().to_string(),
                             nickname: None,
                             content: kick_message(&nick, &by, reason.as_deref(), own_kick),
@@ -624,7 +668,7 @@ impl IrcModel {
                                 server_id,
                                 channel_id,
                                 ChatMessage {
-                                    kind: MessageType::System,
+                                    kind: MessageType::Quit,
                                     id: uuid::Uuid::now_v7().to_string(),
                                     nickname: None,
                                     content: format!("{} quit{}", nick, suffix),
@@ -668,7 +712,7 @@ impl IrcModel {
                             server_id,
                             channel_id,
                             ChatMessage {
-                                kind: MessageType::System,
+                                kind: MessageType::Nick,
                                 id: uuid::Uuid::now_v7().to_string(),
                                 nickname: None,
                                 content: format!("{} is now known as {}", old_nick, new_nick),
@@ -695,7 +739,7 @@ impl IrcModel {
                             server_id,
                             channel_id,
                             ChatMessage {
-                                kind: MessageType::System,
+                                kind: MessageType::Topic,
                                 id: uuid::Uuid::now_v7().to_string(),
                                 nickname: None,
                                 content,
@@ -1081,6 +1125,21 @@ impl IrcModel {
             (None, Some(server_id)) => Some(format!("server:{server_id}")),
             (None, None) => None,
         }
+    }
+
+    pub fn is_message_type_visible(&self, kind: MessageType) -> bool {
+        !self.hidden_message_types.contains(&kind)
+    }
+
+    pub fn hidden_message_types(&self) -> &HashSet<MessageType> {
+        &self.hidden_message_types
+    }
+
+    pub fn toggle_message_type(&mut self, kind: MessageType, cx: &mut Context<Self>) {
+        if !self.hidden_message_types.remove(&kind) {
+            self.hidden_message_types.insert(kind);
+        }
+        cx.notify();
     }
 
     pub fn is_locked(&self) -> bool {

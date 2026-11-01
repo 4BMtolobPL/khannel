@@ -11,7 +11,8 @@ use gpui::{
 };
 use khannel_core::client::types::ServerId;
 
-use crate::model::IrcModel;
+use crate::assets::{ICON_CHECK, ICON_SETTINGS};
+use crate::model::{IrcModel, MessageType};
 use crate::overlay::change_nick_modal::ChangeNickModal;
 use crate::overlay::channel_join_modal::ChannelJoinModal;
 use crate::overlay::context_menu::{
@@ -101,6 +102,10 @@ pub struct ChatApp {
     /// 창 이동 영역(위쪽 여백)에서 마우스를 누른 상태 — 실제로 움직이면 창 이동을 시작한다
     /// (zed platform_title_bar의 should_move 패턴: 단순 클릭/더블클릭과 구분).
     title_drag_pending: bool,
+    /// 메시지 표시 필터 팝업이 열려 있는지 (좌상단 톱니 버튼)
+    message_filter_open: bool,
+    /// 마우스가 톱니 버튼 위에 있는지 — 버튼 위에서 누르면 바깥 클릭 닫기 대신 버튼의 토글이 처리한다
+    message_filter_hovered: bool,
 }
 
 impl ChatApp {
@@ -218,6 +223,8 @@ impl ChatApp {
             user_menu: None,
             sidebar_open: true,
             title_drag_pending: false,
+            message_filter_open: false,
+            message_filter_hovered: false,
         }
     }
 
@@ -287,10 +294,15 @@ impl ChatApp {
     }
 
     pub fn close_menus(&mut self, cx: &mut Context<Self>) {
-        if self.server_menu.is_some() || self.channel_menu.is_some() || self.user_menu.is_some() {
+        if self.server_menu.is_some()
+            || self.channel_menu.is_some()
+            || self.user_menu.is_some()
+            || self.message_filter_open
+        {
             self.server_menu = None;
             self.channel_menu = None;
             self.user_menu = None;
+            self.message_filter_open = false;
             cx.notify();
         }
     }
@@ -570,7 +582,7 @@ impl ChatApp {
             })
     }
 
-    /// 창 왼쪽 위에 고정된 컨트롤 묶음(island): [macOS 신호등] + 사이드바 토글.
+    /// 창 왼쪽 위에 고정된 컨트롤 묶음(island): [macOS 신호등] + 사이드바 토글 + 메시지 필터.
     ///
     /// zeron `render_titlebar_cluster`: 창 왼쪽 위에 얹힌 오버레이라 사이드바를 열고 닫아도 같은
     /// 자리에 머문다. 컨테이너 자체는 리스너가 없어 버튼 사이 빈 곳은 아래 창 이동 영역으로
@@ -634,6 +646,126 @@ impl ChatApp {
                         this.toggle_sidebar(cx)
                     })),
             )
+            .child(div().flex_none().w(px(2.)))
+            .child(self.render_message_filter_button(theme, cx))
+    }
+
+    /// 메시지 표시 필터(톱니) 버튼. 누르면 아래로 체크박스 팝업을 토글한다.
+    fn render_message_filter_button(
+        &self,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let open = self.message_filter_open;
+        let icon = gpui::svg()
+            .path(ICON_SETTINGS)
+            .size(px(15.))
+            .text_color(if open {
+                theme.text_main
+            } else {
+                theme.text_subtle
+            })
+            .group_hover("message-filter", |s| s.text_color(theme.text_main));
+
+        window_control_button("message-filter", icon, theme)
+            .relative()
+            .when(open, |d| d.bg(theme.row_hover()))
+            .hover(|h| h.bg(theme.row_hover()))
+            .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                this.message_filter_hovered = *hovered;
+            }))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.message_filter_open = !this.message_filter_open;
+                cx.notify();
+            }))
+            // 팝업 앵커: 버튼 왼쪽 위에 고정한 빈 상자 (버튼의 가운데 정렬에 영향받지 않게)
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .child(self.render_message_filter_popover(theme, cx)),
+                )
+            })
+    }
+
+    /// 메시지 종류별 표시 체크박스 팝업. 버튼 아래에 왼쪽을 맞춰 띄운다. 바깥을 누르면 닫히고,
+    /// 행을 눌러 토글해도 열린 채로 둔다.
+    fn render_message_filter_popover(
+        &self,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let model = self.model.read(cx);
+        let rows: Vec<_> = MessageType::ALL
+            .into_iter()
+            .map(|kind| {
+                let checked = model.is_message_type_visible(kind);
+                let model = self.model.clone();
+                div()
+                    .id(kind.label())
+                    .flex()
+                    .items_center()
+                    .gap_x(px(8.))
+                    .px(px(6.))
+                    .py(px(4.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme.row_hover()))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        model.update(cx, |m, cx| m.toggle_message_type(kind, cx));
+                    })
+                    .child(checkbox(checked, theme))
+                    .child(kind.label())
+            })
+            .collect();
+
+        let panel = div()
+            .id("message-filter-popover")
+            // 아래 메시지 목록·창 이동 영역이 hover/클릭되지 않게 막는다
+            .occlude()
+            .w(px(200.))
+            .p(px(6.))
+            .flex()
+            .flex_col()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.menu_bg)
+            .shadow_xl()
+            .text_size(px(12.))
+            .font_weight(FontWeight::NORMAL)
+            .text_color(theme.text_main)
+            .cursor_default()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                // 버튼 위에서 누른 경우는 버튼의 토글이 처리한다
+                if !this.message_filter_hovered {
+                    this.message_filter_open = false;
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .px(px(6.))
+                    .pt(px(2.))
+                    .pb(px(4.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("표시할 메시지"),
+            )
+            .children(rows);
+
+        gpui::deferred(
+            gpui::anchored()
+                .anchor(gpui::Anchor::TopLeft)
+                // 이 앵커의 위치는 버튼의 왼쪽 위 — 버튼 높이만큼 아래로, 조금 더 띄운다
+                .offset(gpui::point(px(0.), CONTROL_SIZE + px(6.)))
+                .snap_to_window_with_margin(px(8.))
+                .child(panel),
+        )
+        .with_priority(1)
     }
 
     /// Linux CSD일 때 창 오른쪽 위의 닫기 버튼 (zeron `render_linux_caption_controls`).
@@ -695,6 +827,27 @@ fn window_control_button(
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .child(glyph)
+}
+
+/// 14px 체크박스 상자: 켜져 있으면 강조색 배경 + 흰 체크, 꺼져 있으면 테두리만.
+fn checkbox(checked: bool, theme: Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .size(px(14.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.))
+        .border_1()
+        .when(checked, |d| {
+            d.border_color(theme.accent).bg(theme.accent).child(
+                gpui::svg()
+                    .path(ICON_CHECK)
+                    .size(px(10.))
+                    .text_color(gpui::white()),
+            )
+        })
+        .when(!checked, |d| d.border_color(theme.border))
 }
 
 /// 사이드바 토글 아이콘(☰)을 막대 3개로 직접 그린다.
