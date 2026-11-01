@@ -9,11 +9,22 @@ use gpui::{AssetSource, Result, SharedString};
 
 /// 물음표 원 (유저 목록 권한 기호 도움말 버튼)
 pub const ICON_CIRCLE_HELP: &str = "icons/circle-help.svg";
+/// 톱니바퀴 (메시지 표시 필터 버튼)
+pub const ICON_SETTINGS: &str = "icons/settings.svg";
+/// 체크 표시 (체크박스). 글리프 `✓`는 macOS 대체 폰트에서 정렬이 어긋날 수 있어 SVG로 그린다
+pub const ICON_CHECK: &str = "icons/check.svg";
 
-const ASSETS: &[(&str, &[u8])] = &[(
-    ICON_CIRCLE_HELP,
-    include_bytes!("../assets/icons/circle-help.svg"),
-)];
+const ASSETS: &[(&str, &[u8])] = &[
+    (
+        ICON_CIRCLE_HELP,
+        include_bytes!("../assets/icons/circle-help.svg"),
+    ),
+    (
+        ICON_SETTINGS,
+        include_bytes!("../assets/icons/settings.svg"),
+    ),
+    (ICON_CHECK, include_bytes!("../assets/icons/check.svg")),
+];
 
 pub struct Assets;
 
