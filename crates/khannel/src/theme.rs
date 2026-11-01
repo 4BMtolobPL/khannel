@@ -26,7 +26,7 @@ pub struct Theme {
     // ── 보더 ──
     /// 주요 경계선
     pub border: Rgba,
-    /// 옅은 구분선 (메뉴 separator 등)
+    /// 옅은 구분선 (사이드바 섹션 구분선, island 테두리 등)
     pub border_subtle: Rgba,
     // ── 텍스트 ──
     pub text_main: Rgba,

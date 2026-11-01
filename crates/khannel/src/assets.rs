@@ -13,6 +13,20 @@ pub const ICON_CIRCLE_HELP: &str = "icons/circle-help.svg";
 pub const ICON_SETTINGS: &str = "icons/settings.svg";
 /// 체크 표시 (체크박스). 글리프 `✓`는 macOS 대체 폰트에서 정렬이 어긋날 수 있어 SVG로 그린다
 pub const ICON_CHECK: &str = "icons/check.svg";
+/// 가로줄 3개 (사이드바 토글). 글리프 `☰`는 macOS 대체 폰트에서 정렬이 어긋나 SVG로 그린다
+pub const ICON_MENU: &str = "icons/menu.svg";
+/// 닫힌 자물쇠 (입력 잠금 켜짐)
+pub const ICON_LOCK: &str = "icons/lock.svg";
+/// 열린 자물쇠 (입력 잠금 꺼짐)
+pub const ICON_LOCK_OPEN: &str = "icons/lock-open.svg";
+/// 오른쪽 꺾쇠 (접힌 섹션)
+pub const ICON_CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
+/// 아래쪽 꺾쇠 (펼친 섹션)
+pub const ICON_CHEVRON_DOWN: &str = "icons/chevron-down.svg";
+/// X 표시 (창·모달 닫기). 글리프 `✕`는 대부분의 UI 폰트에 없어 대체 폰트로 그려진다
+pub const ICON_X: &str = "icons/x.svg";
+/// 더하기 (서버 추가 버튼)
+pub const ICON_PLUS: &str = "icons/plus.svg";
 
 const ASSETS: &[(&str, &[u8])] = &[
     (
@@ -24,6 +38,22 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/settings.svg"),
     ),
     (ICON_CHECK, include_bytes!("../assets/icons/check.svg")),
+    (ICON_MENU, include_bytes!("../assets/icons/menu.svg")),
+    (ICON_LOCK, include_bytes!("../assets/icons/lock.svg")),
+    (
+        ICON_LOCK_OPEN,
+        include_bytes!("../assets/icons/lock-open.svg"),
+    ),
+    (
+        ICON_CHEVRON_RIGHT,
+        include_bytes!("../assets/icons/chevron-right.svg"),
+    ),
+    (
+        ICON_CHEVRON_DOWN,
+        include_bytes!("../assets/icons/chevron-down.svg"),
+    ),
+    (ICON_X, include_bytes!("../assets/icons/x.svg")),
+    (ICON_PLUS, include_bytes!("../assets/icons/plus.svg")),
 ];
 
 pub struct Assets;

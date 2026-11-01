@@ -8,6 +8,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 
+use crate::assets::{ICON_LOCK, ICON_LOCK_OPEN};
 use crate::model::IrcModel;
 use crate::theme::Theme;
 use crate::ui::input::{TextInput, TextInputEvent};
@@ -87,11 +88,11 @@ impl InputBar {
     fn render_button(
         &self,
         id: &'static str,
-        label: &'static str,
+        icon: impl IntoElement,
         theme: Theme,
     ) -> gpui::Stateful<gpui::Div> {
         // Svelte: text-sm px-2 py-1 rounded hover:bg-neutral-200/700
-        // 이모지 아이콘이 정중앙에 오도록 flex 가운데 정렬
+        // SVG 아이콘이 정중앙에 오도록 flex 가운데 정렬
         div()
             .id(id)
             .cursor_pointer()
@@ -101,9 +102,8 @@ impl InputBar {
             .rounded(px(4.))
             .px(px(8.))
             .py(px(4.))
-            .text_sm()
             .hover(|h| h.bg(theme.hover))
-            .child(label)
+            .child(icon)
     }
 }
 
@@ -123,10 +123,21 @@ impl Render for InputBar {
                     .flex()
                     .gap_x(px(6.))
                     .child(
-                        self.render_button("lock", if is_locked { "🔒" } else { "🔓" }, theme)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.toggle_lock(window, cx)
-                            })),
+                        self.render_button(
+                            "lock",
+                            gpui::svg()
+                                .path(if is_locked { ICON_LOCK } else { ICON_LOCK_OPEN })
+                                .size(px(16.))
+                                .text_color(if is_locked {
+                                    theme.text_main
+                                } else {
+                                    theme.text_subtle
+                                }),
+                            theme,
+                        )
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| this.toggle_lock(window, cx),
+                        )),
                     )
                     .child(
                         // 입력 상자: flex-1 rounded px-3 py-2 text-sm border + focus ring

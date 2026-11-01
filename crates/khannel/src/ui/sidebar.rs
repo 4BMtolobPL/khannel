@@ -15,7 +15,7 @@ use gpui::{
 };
 use khannel_core::client::types::ServerId;
 
-use crate::assets::ICON_CIRCLE_HELP;
+use crate::assets::{ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_CIRCLE_HELP, ICON_PLUS};
 use crate::model::{Channel, ChannelUser, IrcModel, Server, UiServerStatus, nick_eq};
 use crate::theme::{Theme, status_dot_color};
 
@@ -257,18 +257,24 @@ impl Render for Sidebar {
                     .child(
                         div()
                             .id("add-server")
+                            .group("add-server")
                             .size(px(20.))
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .text_color(header_glyph)
-                            .hover(|h| h.bg(theme.row_hover()).text_color(theme.text_main))
+                            .hover(|h| h.bg(theme.row_hover()))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 cx.emit(SidebarEvent::OpenServerModal);
                             }))
-                            .child("+"),
+                            .child(
+                                gpui::svg()
+                                    .path(ICON_PLUS)
+                                    .size(px(12.))
+                                    .text_color(header_glyph)
+                                    .group_hover("add-server", |s| s.text_color(theme.text_main)),
+                            ),
                     ),
             )
             .child(
@@ -454,6 +460,7 @@ impl Sidebar {
 
         let header = div()
             .id("users-header")
+            .group("users-header")
             .flex_none()
             .h(SECTION_HEADER_HEIGHT)
             .px(ROW_PAD_X)
@@ -471,10 +478,17 @@ impl Sidebar {
                 cx.notify();
             }))
             .child(
-                div()
-                    .flex_none()
-                    .w(px(10.))
-                    .child(if collapsed { "▸" } else { "▾" }),
+                div().flex_none().w(px(10.)).flex().items_center().child(
+                    gpui::svg()
+                        .path(if collapsed {
+                            ICON_CHEVRON_RIGHT
+                        } else {
+                            ICON_CHEVRON_DOWN
+                        })
+                        .size(px(10.))
+                        .text_color(header_glyph)
+                        .group_hover("users-header", |s| s.text_color(theme.text_main)),
+                ),
             )
             .child(div().flex_1().child("Users"))
             .child(div().flex_none().child(count.to_string()))

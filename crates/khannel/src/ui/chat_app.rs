@@ -11,7 +11,7 @@ use gpui::{
 };
 use khannel_core::client::types::ServerId;
 
-use crate::assets::{ICON_CHECK, ICON_SETTINGS};
+use crate::assets::{ICON_CHECK, ICON_MENU, ICON_SETTINGS, ICON_X};
 use crate::model::{IrcModel, MessageType, UiServerStatus};
 use crate::overlay::change_nick_modal::ChangeNickModal;
 use crate::overlay::channel_join_modal::ChannelJoinModal;
@@ -340,26 +340,19 @@ impl ChatApp {
             // Connect — Svelte는 핸들러 없는 데코레이션 버튼이지만, 재연결 로직이
             // IrcModel에 이미 있으므로 연결해 둔다.
             .child(
-                context_menu_item(
-                    "menu-connect",
-                    "🔌",
-                    connect_label,
-                    MenuItemStyle::Accent,
-                    theme,
-                )
-                .on_click({
-                    let chat = chat.clone();
-                    let model = model.clone();
-                    move |_, _, cx| {
-                        chat.update(cx, |this, cx| this.close_menus(cx));
-                        model.update(cx, |m, cx| m.connect_server(id, cx));
-                    }
-                }),
+                context_menu_item("menu-connect", connect_label, MenuItemStyle::Accent, theme)
+                    .on_click({
+                        let chat = chat.clone();
+                        let model = model.clone();
+                        move |_, _, cx| {
+                            chat.update(cx, |this, cx| this.close_menus(cx));
+                            model.update(cx, |m, cx| m.connect_server(id, cx));
+                        }
+                    }),
             )
             .child(
                 context_menu_item(
                     "menu-disconnect",
-                    "🚫",
                     disconnect_label,
                     MenuItemStyle::Danger,
                     theme,
@@ -377,7 +370,6 @@ impl ChatApp {
             .child(
                 context_menu_item(
                     "menu-copy-server",
-                    "📋",
                     "Copy Server Name",
                     MenuItemStyle::Normal,
                     theme,
@@ -401,7 +393,6 @@ impl ChatApp {
             .child(
                 context_menu_item(
                     "menu-change-nick",
-                    "👤",
                     "Change Nickname",
                     MenuItemStyle::Normal,
                     theme,
@@ -419,7 +410,6 @@ impl ChatApp {
             .child(
                 context_menu_item(
                     "menu-remove-server",
-                    "🗑",
                     "Delete Server",
                     MenuItemStyle::Danger,
                     theme,
@@ -450,37 +440,34 @@ impl ChatApp {
         let menu = context_menu_container(theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menus(cx)))
             .child(
-                context_menu_item("menu-join", "📥", "Join", MenuItemStyle::Accent, theme)
-                    .on_click({
-                        let chat = chat.clone();
-                        let model = model.clone();
-                        let server_id = state.server_id;
-                        let channel_name = state.channel_name.clone();
-                        move |_, _, cx| {
-                            chat.update(cx, |this, cx| this.close_menus(cx));
-                            // 실패는 model에서 로깅된다 (메뉴엔 표시 영역이 없음)
-                            let _ = model
-                                .update(cx, |m, cx| m.join_channel(server_id, &channel_name, cx));
-                        }
-                    }),
+                context_menu_item("menu-join", "Join", MenuItemStyle::Accent, theme).on_click({
+                    let chat = chat.clone();
+                    let model = model.clone();
+                    let server_id = state.server_id;
+                    let channel_name = state.channel_name.clone();
+                    move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
+                        // 실패는 model에서 로깅된다 (메뉴엔 표시 영역이 없음)
+                        let _ =
+                            model.update(cx, |m, cx| m.join_channel(server_id, &channel_name, cx));
+                    }
+                }),
             )
             .child(
-                context_menu_item("menu-leave", "🚪", "Leave", MenuItemStyle::Danger, theme)
-                    .on_click({
-                        let chat = chat.clone();
-                        let model = model.clone();
-                        let channel_id = state.channel_id.clone();
-                        move |_, _, cx| {
-                            chat.update(cx, |this, cx| this.close_menus(cx));
-                            model.update(cx, |m, cx| m.leave_channel(&channel_id, cx));
-                        }
-                    }),
+                context_menu_item("menu-leave", "Leave", MenuItemStyle::Danger, theme).on_click({
+                    let chat = chat.clone();
+                    let model = model.clone();
+                    let channel_id = state.channel_id.clone();
+                    move |_, _, cx| {
+                        chat.update(cx, |this, cx| this.close_menus(cx));
+                        model.update(cx, |m, cx| m.leave_channel(&channel_id, cx));
+                    }
+                }),
             )
             .child(context_menu_separator(theme))
             .child(
                 context_menu_item(
                     "menu-copy-channel",
-                    "📋",
                     "Copy Channel Name",
                     MenuItemStyle::Normal,
                     theme,
@@ -515,7 +502,7 @@ impl ChatApp {
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menus(cx)))
             .when(!is_own, |menu| {
                 menu.child(
-                    context_menu_item("menu-query", "💬", "Query", MenuItemStyle::Accent, theme)
+                    context_menu_item("menu-query", "Query", MenuItemStyle::Accent, theme)
                         .on_click({
                             let chat = chat.clone();
                             let server_id = state.server_id;
@@ -531,7 +518,6 @@ impl ChatApp {
             .child(
                 context_menu_item(
                     "menu-copy-nick",
-                    "📋",
                     "Copy Nickname",
                     MenuItemStyle::Normal,
                     theme,
@@ -799,16 +785,23 @@ impl ChatApp {
                 .flex()
                 .items_center()
                 .child(
-                    window_control_button("window-close", "✕", theme)
-                        .font_weight(FontWeight::MEDIUM)
-                        // zeron linux_caption_button: 닫기는 빨간 배경 + 흰 글자
-                        .hover(|h| h.bg(gpui::rgb(0xe81123)).text_color(gpui::white()))
-                        // 트레이가 있으면 창만 닫히고 앱은 트레이에 남는다. 트레이가 없으면 마지막 창을 닫을 때
-                        // 앱이 종료된다(on_app_quit → graceful shutdown). main.rs `setup_tray` 참고.
-                        .on_click(|_, window, cx| {
-                            cx.stop_propagation();
-                            window.remove_window()
-                        }),
+                    window_control_button(
+                        "window-close",
+                        gpui::svg()
+                            .path(ICON_X)
+                            .size(px(14.))
+                            .text_color(theme.text_subtle)
+                            .group_hover("window-close", |s| s.text_color(gpui::white())),
+                        theme,
+                    )
+                    // zeron linux_caption_button: 닫기는 빨간 배경 + 흰 X
+                    .hover(|h| h.bg(gpui::rgb(0xe81123)))
+                    // 트레이가 있으면 창만 닫히고 앱은 트레이에 남는다. 트레이가 없으면 마지막 창을 닫을 때
+                    // 앱이 종료된다(on_app_quit → graceful shutdown). main.rs `setup_tray` 참고.
+                    .on_click(|_, window, cx| {
+                        cx.stop_propagation();
+                        window.remove_window()
+                    }),
                 ),
         )
     }
@@ -861,28 +854,17 @@ fn checkbox(checked: bool, theme: Theme) -> gpui::Div {
         .when(!checked, |d| d.border_color(theme.border))
 }
 
-/// 사이드바 토글 아이콘(☰)을 막대 3개로 직접 그린다.
+/// 사이드바 토글 아이콘(☰).
 ///
 /// `☰` 글자는 macOS에서 대체 폰트로 그려지는데, 그 폰트의 글자 높이 정보 때문에 버튼 상자를
-/// 가운데 정렬해도 그림이 좌하단으로 쏠렸다. div로 그리면 폰트와 무관하게 정확히 가운데에 온다.
-/// 버튼 hover 시 막대 색은 group hover로 바꾼다(div 배경은 글자색을 상속하지 않는다).
-fn hamburger_icon(theme: Theme) -> gpui::Div {
-    let bar = || {
-        div()
-            .w_full()
-            .h(px(1.5))
-            .rounded_full()
-            .bg(theme.text_subtle)
-            .group_hover("toggle-sidebar", |s| s.bg(theme.text_main))
-    };
-    div()
-        .w(px(14.))
-        .flex()
-        .flex_col()
-        .gap(px(3.))
-        .child(bar())
-        .child(bar())
-        .child(bar())
+/// 가운데 정렬해도 그림이 좌하단으로 쏠렸다. SVG로 그리면 폰트와 무관하게 정확히 가운데에 온다.
+/// svg는 부모 글자색을 상속하지 않으므로 버튼 hover 시 색은 group hover로 바꾼다.
+fn hamburger_icon(theme: Theme) -> gpui::Svg {
+    gpui::svg()
+        .path(ICON_MENU)
+        .size(px(15.))
+        .text_color(theme.text_subtle)
+        .group_hover("toggle-sidebar", |s| s.text_color(theme.text_main))
 }
 
 impl Render for ChatApp {
