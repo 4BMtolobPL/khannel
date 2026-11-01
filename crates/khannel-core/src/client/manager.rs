@@ -50,7 +50,7 @@ impl KhannelManager {
     }
 
     /// 액터를 띄운다.
-    /// 
+    ///
     /// `retry_initial`: 첫 접속 실패도 재시도할지 여부 (`ServerActor::retry_initial`)
     fn run_server(&self, server_id: ServerId, retry_initial: bool) -> anyhow::Result<()> {
         let server = self
@@ -67,11 +67,15 @@ impl KhannelManager {
             Arc::downgrade(&self.khannel_state),
             retry_initial,
         );
-        // spawn과 Connecting 전이를 원자적으로 수행 (ServerState::start_connecting 참고)
-        if !server.start_connecting(|| {
-            info!(server_id = %server_id, "Spawn server actor");
-            tokio::spawn(actor.run())
-        }) {
+        // spawn과 Connecting 전이를 원자적으로 수행 (ServerState::start_connecting 참고).
+        // Connecting 알림도 락 안에서 보내 새 액터의 Registering 등보다 먼저 도착하게 한다
+        if !server.start_connecting(
+            || {
+                info!(server_id = %server_id, "Spawn server actor");
+                tokio::spawn(actor.run())
+            },
+            |status| emit_server_status(&self.ui_sink, server_id, status),
+        ) {
             return Err(anyhow!("Already connecting, connected or disconnecting"));
         }
         Ok(())
@@ -112,15 +116,15 @@ impl KhannelManager {
 
         // 사용자가 직접 누른 접속: 첫 접속 실패는 바로 알린다
         self.run_server(server_id, false)?;
-        emit_server_status(&self.ui_sink, server_id, ServerStatus::Connecting);
 
         Ok(())
     }
 
     pub fn disconnect_server(&self, server_id: ServerId) -> anyhow::Result<()> {
         if let Some(server) = self.khannel_state.get_server(server_id) {
-            server.disconnect();
-            emit_server_status(&self.ui_sink, server_id, server.status());
+            // 실제로 바뀐 상태만 락 안에서 알린다 (끝나 가는 액터의 Disconnected보다 늦게
+            // Disconnecting을 보내 UI가 Disconnecting에 머무는 일이 없게)
+            server.disconnect(|status| emit_server_status(&self.ui_sink, server_id, status));
             Ok(())
         } else {
             Err(anyhow!("Server not found"))
@@ -200,9 +204,7 @@ impl KhannelManager {
         if let Some(server) = self.khannel_state.get_server(server_id) {
             // 사용자 취소이므로 실제 전이 결과(Disconnected)를 그대로 알린다
             // (이전: 상태는 Disconnected인데 UI에는 Failed를 보냈다)
-            if server.abort_connecting() {
-                emit_server_status(&self.ui_sink, server_id, server.status());
-            }
+            server.abort_connecting(|status| emit_server_status(&self.ui_sink, server_id, status));
             Ok(())
         } else {
             Err(anyhow!("Server not found"))

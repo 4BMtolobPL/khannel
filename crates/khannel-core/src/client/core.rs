@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Weak};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::task;
 use tokio::time::timeout;
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -62,7 +63,11 @@ impl ServerActor {
         let mut retry_connect_failure = self.retry_initial;
 
         loop {
-            let result = self.attempt().await;
+            let Some(result) = self.attempt().await else {
+                // 취소됐거나 다른 액터로 바뀜 — 이 서버는 더 이상 이 액터의 것이 아니다
+                debug!(server_id = %self.server_id, "Actor superseded, stopping");
+                return;
+            };
             debug!(server_id = %self.server_id, result = ?result, "Connection attempt ended");
 
             if matches!(
@@ -77,8 +82,8 @@ impl ServerActor {
 
             match reconnect_policy(&result, retry_connect_failure) {
                 Decision::Stop => {
-                    self.server.transition_to_disconnected();
-                    emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
+                    self.server
+                        .transition_to_disconnected(task::id(), self.notify_status());
                     return;
                 }
                 Decision::Fail(reason) => {
@@ -96,15 +101,16 @@ impl ServerActor {
                     );
 
                     // 사용자가 그새 끊었거나 취소했으면 상태를 덮어쓰지 않고 끝낸다
-                    if !self.server.transition_to_reconnecting() {
+                    let notice = retry_message(&result, delay, retries);
+                    if !self
+                        .server
+                        .transition_to_reconnecting(task::id(), |status| {
+                            emit_server_status(&self.ui_sink, self.server_id, status);
+                            emit_system_message(&self.ui_sink, self.server_id, &notice);
+                        })
+                    {
                         return;
                     }
-                    emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Reconnecting);
-                    emit_system_message(
-                        &self.ui_sink,
-                        self.server_id,
-                        &retry_message(&result, delay, retries),
-                    );
                     info!(
                         event = "reconnect_scheduled",
                         retries,
@@ -113,48 +119,61 @@ impl ServerActor {
 
                     tokio::time::sleep(delay).await;
 
-                    if !self.server.transition_to_connecting() {
+                    if !self
+                        .server
+                        .transition_to_connecting(task::id(), self.notify_status())
+                    {
                         return;
                     }
-                    emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Connecting);
                 }
             }
         }
     }
 
     /// 접속 한 번: 연결 → 등록 → 세션이 끝날 때까지.
-    async fn attempt(&self) -> AttemptResult {
+    /// 연결 직후 이 액터가 이미 취소·교체됐으면 None (세션을 시작하지 않는다).
+    async fn attempt(&self) -> Option<AttemptResult> {
         // 1. 연결 수립
         let (client, stream) = match self.connect().await {
             Ok(connected) => connected,
             Err(e) => {
-                return AttemptResult::ConnectFailed {
+                return Some(AttemptResult::ConnectFailed {
                     retryable: is_retryable_connect_error(&e),
                     error: e.to_string(),
-                };
+                });
             }
         };
 
-        // 2. 이번 접속은 config의 닉으로 등록한다 — 이전 세션의 런타임 닉(강제 변경 등)이
-        //    남아 있으면 실제 등록 닉과 어긋나므로 맞추고, 남은 닉 변경 요청은 버린다.
-        self.server.cancel_nick_change();
-        let config_nick = self.server.config().nickname().to_string();
-        self.sync_own_nick(&config_nick);
-
-        // 3. 커맨드 채널은 연결 성공 이후에 생성
+        // 2. 커맨드 채널은 연결 성공 이후에 생성. 전이에 성공했을 때만(락 안에서) 이번 접속을
+        //    config의 닉으로 등록하도록 맞춘다 — 이전 세션의 런타임 닉(강제 변경 등)이 남아 있으면
+        //    실제 등록 닉과 어긋나므로 맞추고, 남은 닉 변경 요청은 버린다.
         let (tx, rx) = unbounded_channel::<ServerCommand>();
-        self.server.transition_to_registering(tx);
-        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Registering);
+        let registering = self
+            .server
+            .transition_to_registering(task::id(), tx, |status| {
+                self.server.cancel_nick_change();
+                let config_nick = self.server.config().nickname().to_string();
+                self.sync_own_nick(&config_nick);
+                emit_server_status(&self.ui_sink, self.server_id, status);
+            });
+        if !registering {
+            return None;
+        }
 
         // 4. 메인 세션: IRC 스트림과 커맨드 채널을 select 로 소비
         trace!(server_id = %self.server_id, "Start server actor loop");
         let mut ctx = SessionCtx::default();
         let outcome = self.run_session(client, stream, rx, &mut ctx).await;
 
-        AttemptResult::Session {
+        Some(AttemptResult::Session {
             outcome,
             registered: ctx.registered,
-        }
+        })
+    }
+
+    /// 상태 전이 알림: 바뀐 상태를 UI로 보낸다 (`ServerState`의 전이가 락 안에서 호출)
+    fn notify_status(&self) -> impl FnOnce(ServerStatus) + '_ {
+        move |status| emit_server_status(&self.ui_sink, self.server_id, status)
     }
 
     fn build_irc_config(&self) -> Config {
@@ -565,7 +584,6 @@ impl ServerActor {
             }
             Command::Response(Response::RPL_WELCOME, args) => {
                 ctx.registered = true;
-                self.server.transition_to_connected();
 
                 // 001의 첫 인자는 서버가 실제로 등록한 내 닉 (길이 제한으로 잘린 경우 등 반영)
                 if let Some(registered) = args.first().filter(|nick| !nick.is_empty()) {
@@ -599,10 +617,11 @@ impl ServerActor {
                     }
                 }
 
-                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Connected);
-
-                // Optional: Alert system message
-                emit_system_message(&self.ui_sink, self.server_id, "서버에 연결되었습니다.");
+                // 사용자가 그새 끊었으면(Disconnecting) Connected로 바꾸지도 알리지도 않는다
+                self.server.transition_to_connected(task::id(), |status| {
+                    emit_server_status(&self.ui_sink, self.server_id, status);
+                    emit_system_message(&self.ui_sink, self.server_id, "서버에 연결되었습니다.");
+                });
             }
             Command::Response(Response::RPL_NAMREPLY, args) => {
                 // args: [내 닉, 채널 타입(= * @), 채널, "닉 @닉 +닉 ..."]
@@ -736,14 +755,14 @@ impl ServerActor {
     fn fail(&self, message: String) {
         error!(server_id = %self.server_id, message = %message, "Server actor failed");
 
-        // 실패 사유를 서버 버퍼에도 남긴다 (Failed 상태의 last_error와 동일 문구)
-        emit_system_message(
-            &self.ui_sink,
-            self.server_id,
-            &format!("연결 실패: {message}"),
-        );
-        self.server.transition_to_failed(message);
-        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Failed);
+        // 실패 사유를 서버 버퍼에도 남긴다 (Failed 상태의 last_error와 동일 문구).
+        // 사용자가 그새 취소했으면 Failed로 덮어쓰지도 알리지도 않는다
+        let notice = format!("연결 실패: {message}");
+        self.server
+            .transition_to_failed(task::id(), message, |status| {
+                emit_system_message(&self.ui_sink, self.server_id, &notice);
+                emit_server_status(&self.ui_sink, self.server_id, status);
+            });
     }
 }
 
