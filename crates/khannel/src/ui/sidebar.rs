@@ -283,8 +283,12 @@ impl Render for Sidebar {
                         let unread = server_unread.get(&item.id).copied().unwrap_or(0);
                         let server_id = item.id;
                         let is_connected = item.status == UiServerStatus::Connected;
-                        let is_connecting = item.status == UiServerStatus::Connecting
-                            || item.status == UiServerStatus::Registering;
+                        let is_connecting = matches!(
+                            item.status,
+                            UiServerStatus::Connecting
+                                | UiServerStatus::Registering
+                                | UiServerStatus::Reconnecting
+                        );
 
                         let server_row = row(
                             format!("server-row-{server_id}"),

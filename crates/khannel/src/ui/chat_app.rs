@@ -12,7 +12,7 @@ use gpui::{
 use khannel_core::client::types::ServerId;
 
 use crate::assets::{ICON_CHECK, ICON_SETTINGS};
-use crate::model::{IrcModel, MessageType};
+use crate::model::{IrcModel, MessageType, UiServerStatus};
 use crate::overlay::change_nick_modal::ChangeNickModal;
 use crate::overlay::channel_join_modal::ChannelJoinModal;
 use crate::overlay::context_menu::{
@@ -322,6 +322,17 @@ impl ChatApp {
         let model = self.model.clone();
         let chat = cx.entity();
         let id = state.server_id;
+        // 재연결 대기 중엔 같은 액션을 '지금 연결'(대기 건너뛰기) / '재연결 취소'로 보여 준다
+        let reconnecting = model
+            .read(cx)
+            .servers()
+            .get(&id)
+            .is_some_and(|server| server.status == UiServerStatus::Reconnecting);
+        let (connect_label, disconnect_label) = if reconnecting {
+            ("Connect Now", "Cancel Reconnect")
+        } else {
+            ("Connect", "Disconnect")
+        };
 
         let menu = context_menu_container(theme)
             // 메뉴 밖 클릭 → 닫기 (Svelte: window click listener 대체)
@@ -332,7 +343,7 @@ impl ChatApp {
                 context_menu_item(
                     "menu-connect",
                     "🔌",
-                    "Connect",
+                    connect_label,
                     MenuItemStyle::Accent,
                     theme,
                 )
@@ -349,7 +360,7 @@ impl ChatApp {
                 context_menu_item(
                     "menu-disconnect",
                     "🚫",
-                    "Disconnect",
+                    disconnect_label,
                     MenuItemStyle::Danger,
                     theme,
                 )

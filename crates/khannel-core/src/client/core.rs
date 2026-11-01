@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Weak};
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::task;
 use tokio::time::timeout;
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -26,6 +27,9 @@ pub struct ServerActor {
     /// 스냅샷 저장용 (닉 변경 영속화). 액터 태스크가 상태 전체를 붙잡아 순환 참조가 되지
     /// 않도록 약한 참조로 둔다 — 종료 중이라 사라졌으면 저장을 건너뛴다.
     khannel_state: Weak<KhannelState>,
+    /// 첫 접속(connect) 실패도 재시도할지. 앱 시작 자동 접속은 true(네트워크가 아직 안 올라왔을 수
+    /// 있음), 사용자가 직접 누른 접속은 false(바로 Failed로 알린다).
+    retry_initial: bool,
 }
 
 impl ServerActor {
@@ -34,64 +38,142 @@ impl ServerActor {
         server: Arc<ServerState>,
         ui_sink: EventSender,
         khannel_state: Weak<KhannelState>,
+        retry_initial: bool,
     ) -> Self {
         Self {
             server_id,
             server,
             ui_sink,
             khannel_state,
+            retry_initial,
         }
     }
 
     /// 액터의 진입점. KhannelManager가 `tokio::spawn(actor.run())`으로 실행한다.
+    ///
+    /// 끝낼 사유(사용자 종료, 재시도해도 소용없는 실패)가 나올 때까지 접속 → 세션을 반복한다.
+    /// 재연결 대기 중에도 task는 살아 있으므로, 사용자 취소는 task abort로 처리된다.
     #[instrument(name = "server_actor", skip_all, fields(server_id = %self.server_id))]
     pub async fn run(self) {
         debug!(server_id = %self.server_id, "Starting server actor");
 
-        // 1. 연결 수립. 에러는 fail 로 소비
+        // 이번 재시도 묶음에서 몇 번째 재시도인지 (등록까지 성공하면 0으로 돌아간다)
+        let mut retries: u32 = 0;
+        // 접속(connect) 실패도 재시도할지. 한 번이라도 재연결에 들어가면 true
+        let mut retry_connect_failure = self.retry_initial;
+
+        loop {
+            let Some(result) = self.attempt().await else {
+                // 취소됐거나 다른 액터로 바뀜 — 이 서버는 더 이상 이 액터의 것이 아니다
+                debug!(server_id = %self.server_id, "Actor superseded, stopping");
+                return;
+            };
+            debug!(server_id = %self.server_id, result = ?result, "Connection attempt ended");
+
+            if matches!(
+                result,
+                AttemptResult::Session {
+                    registered: true,
+                    ..
+                }
+            ) {
+                retries = 0;
+            }
+
+            match reconnect_policy(&result, retry_connect_failure) {
+                Decision::Stop => {
+                    self.server
+                        .transition_to_disconnected(task::id(), self.notify_status());
+                    return;
+                }
+                Decision::Fail(reason) => {
+                    self.fail(reason);
+                    return;
+                }
+                Decision::Retry => {
+                    retry_connect_failure = true;
+                    retries += 1;
+                    let delay = backoff(
+                        retries,
+                        RECONNECT_BASE_DELAY,
+                        RECONNECT_MAX_DELAY,
+                        jitter_sample(),
+                    );
+
+                    // 사용자가 그새 끊었거나 취소했으면 상태를 덮어쓰지 않고 끝낸다
+                    let notice = retry_message(&result, delay, retries);
+                    if !self
+                        .server
+                        .transition_to_reconnecting(task::id(), |status| {
+                            emit_server_status(&self.ui_sink, self.server_id, status);
+                            emit_system_message(&self.ui_sink, self.server_id, &notice);
+                        })
+                    {
+                        return;
+                    }
+                    info!(
+                        event = "reconnect_scheduled",
+                        retries,
+                        delay_ms = delay.as_millis() as u64
+                    );
+
+                    tokio::time::sleep(delay).await;
+
+                    if !self
+                        .server
+                        .transition_to_connecting(task::id(), self.notify_status())
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 접속 한 번: 연결 → 등록 → 세션이 끝날 때까지.
+    /// 연결 직후 이 액터가 이미 취소·교체됐으면 None (세션을 시작하지 않는다).
+    async fn attempt(&self) -> Option<AttemptResult> {
+        // 1. 연결 수립
         let (client, stream) = match self.connect().await {
             Ok(connected) => connected,
             Err(e) => {
-                self.fail(e.to_string());
-                return;
+                return Some(AttemptResult::ConnectFailed {
+                    retryable: is_retryable_connect_error(&e),
+                    error: e.to_string(),
+                });
             }
         };
 
-        // 2. 이번 접속은 config의 닉으로 등록한다 — 이전 세션의 런타임 닉(강제 변경 등)이
-        //    남아 있으면 실제 등록 닉과 어긋나므로 맞추고, 남은 닉 변경 요청은 버린다.
-        self.server.cancel_nick_change();
-        let config_nick = self.server.config().nickname().to_string();
-        self.sync_own_nick(&config_nick);
-
-        // 3. 커맨드 채널은 연결 성공 이후에 생성
+        // 2. 커맨드 채널은 연결 성공 이후에 생성. 전이에 성공했을 때만(락 안에서) 이번 접속을
+        //    config의 닉으로 등록하도록 맞춘다 — 이전 세션의 런타임 닉(강제 변경 등)이 남아 있으면
+        //    실제 등록 닉과 어긋나므로 맞추고, 남은 닉 변경 요청은 버린다.
         let (tx, rx) = unbounded_channel::<ServerCommand>();
-        self.server.transition_to_registering(tx);
-        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Registering);
+        let registering = self
+            .server
+            .transition_to_registering(task::id(), tx, |status| {
+                self.server.cancel_nick_change();
+                let config_nick = self.server.config().nickname().to_string();
+                self.sync_own_nick(&config_nick);
+                emit_server_status(&self.ui_sink, self.server_id, status);
+            });
+        if !registering {
+            return None;
+        }
 
         // 4. 메인 세션: IRC 스트림과 커맨드 채널을 select 로 소비
         trace!(server_id = %self.server_id, "Start server actor loop");
-        let outcome = self.run_session(client, stream, rx).await;
+        let mut ctx = SessionCtx::default();
+        let outcome = self.run_session(client, stream, rx, &mut ctx).await;
 
-        // 5. 세션 종료. 추후 재연결 구현 시 Closed 분기가 재시도 진입점이 된다.
-        match &outcome {
-            SessionOutcome::Failed(reason) => self.fail(reason.clone()),
-            SessionOutcome::Quit => {
-                self.server.transition_to_disconnected();
-                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
-            }
-            SessionOutcome::Closed => {
-                self.server.transition_to_disconnected();
-                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Disconnected);
-                // 사용자가 끊은 것이 아닌 연결 단절 — 서버 버퍼에 알림
-                emit_system_message(
-                    &self.ui_sink,
-                    self.server_id,
-                    "서버와의 연결이 끊어졌습니다.",
-                );
-            }
-        }
+        Some(AttemptResult::Session {
+            outcome,
+            registered: ctx.registered,
+        })
+    }
 
-        debug!(server_id = %self.server_id, reason = ?outcome, "Server actor session ended");
+    /// 상태 전이 알림: 바뀐 상태를 UI로 보낸다 (`ServerState`의 전이가 락 안에서 호출)
+    fn notify_status(&self) -> impl FnOnce(ServerStatus) + '_ {
+        move |status| emit_server_status(&self.ui_sink, self.server_id, status)
     }
 
     fn build_irc_config(&self) -> Config {
@@ -104,6 +186,10 @@ impl ServerActor {
             nickname: Some(server_config.nickname().to_string()),
             // alt 닉네임 직접 제어
             alt_nicks: vec![],
+            // 조용히 끊긴 연결(네트워크 단절·절전 복귀 등)을 빨리 알아채도록 기본값(180s/20s)보다
+            // 짧게 — 최대 90초 안에 PingTimeout으로 세션이 끝나 재연결에 들어간다
+            ping_time: Some(PING_TIME_SECS),
+            ping_timeout: Some(PING_TIMEOUT_SECS),
             ..Config::default()
         }
     }
@@ -112,7 +198,15 @@ impl ServerActor {
     async fn connect(&self) -> anyhow::Result<(Client, ClientStream)> {
         let config = self.build_irc_config();
 
-        let mut client = Client::from_config(config).await?;
+        // 응답 없는 주소면 OS의 SYN 재전송(Linux 약 2분) 동안 멈춰 있으므로 직접 끊는다
+        let mut client = timeout(CONNECT_TIMEOUT, Client::from_config(config))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "{}초 안에 서버에 연결하지 못했습니다",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })??;
         client.identify()?;
         let stream = client.stream()?;
 
@@ -126,15 +220,15 @@ impl ServerActor {
         client: Client,
         mut stream: ClientStream,
         mut rx: UnboundedReceiver<ServerCommand>,
+        ctx: &mut SessionCtx,
     ) -> SessionOutcome {
-        let mut ctx = SessionCtx::default();
         loop {
             tokio::select! {
                 // IRC 서버에서 오는 메시지
                 result = stream.next() => {
                     match result {
                         Some(Ok(message)) => {
-                            let _ = self.handle_message(&client, &mut ctx, message);
+                            let _ = self.handle_message(&client, ctx, message);
                         }
                         Some(Err(error::Error::NoUsableNick)) => {
                             // 서버가 닉네임을 거부(433 ERR_NICKNAMEINUSE / 432 ERR_ERRONEOUSNICKNAME)했고
@@ -177,11 +271,11 @@ impl ServerActor {
                                 error = ?e,
                                 "IRC stream error, connection likely closed"
                             );
-                            return SessionOutcome::Closed
+                            return SessionOutcome::Closed { banned: ctx.banned.take() }
                         }
                         None => {
                             warn!(event = "irc_stream_ended", "IRC stream ended unexpectedly");
-                            return SessionOutcome::Closed
+                            return SessionOutcome::Closed { banned: ctx.banned.take() }
                         }
                     }
                 }
@@ -198,11 +292,12 @@ impl ServerActor {
                             drain_after_quit(&mut stream).await;
                             return SessionOutcome::Quit
                         }
-                        Some(cmd) => self.handle_server_command(&client, &mut ctx, cmd),
-                        // 모든 sender가 사라진 경우 (runtime이 정리됨): 수신할 커맨드는 없으므로 세션 종료
+                        Some(cmd) => self.handle_server_command(&client, ctx, cmd),
+                        // 모든 sender가 사라진 경우 (runtime이 정리됨): 수신할 커맨드가 없으므로
+                        // 사용자 종료처럼 끝낸다 (재연결하지 않는다)
                         None => {
                             warn!(event = "command_channel_closed", "All command senders dropped, closing session");
-                            return SessionOutcome::Closed
+                            return SessionOutcome::Quit
                         }
                     }
                 }
@@ -488,7 +583,7 @@ impl ServerActor {
                     .emit();
             }
             Command::Response(Response::RPL_WELCOME, args) => {
-                self.server.transition_to_connected();
+                ctx.registered = true;
 
                 // 001의 첫 인자는 서버가 실제로 등록한 내 닉 (길이 제한으로 잘린 경우 등 반영)
                 if let Some(registered) = args.first().filter(|nick| !nick.is_empty()) {
@@ -522,10 +617,11 @@ impl ServerActor {
                     }
                 }
 
-                emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Connected);
-
-                // Optional: Alert system message
-                emit_system_message(&self.ui_sink, self.server_id, "서버에 연결되었습니다.");
+                // 사용자가 그새 끊었으면(Disconnecting) Connected로 바꾸지도 알리지도 않는다
+                self.server.transition_to_connected(task::id(), |status| {
+                    emit_server_status(&self.ui_sink, self.server_id, status);
+                    emit_system_message(&self.ui_sink, self.server_id, "서버에 연결되었습니다.");
+                });
             }
             Command::Response(Response::RPL_NAMREPLY, args) => {
                 // args: [내 닉, 채널 타입(= * @), 채널, "닉 @닉 +닉 ..."]
@@ -560,6 +656,20 @@ impl ServerActor {
                         .names(self.server_id, channel.clone(), users, symbols)
                         .emit();
                 }
+            }
+            Command::Response(Response::ERR_YOUREBANNEDCREEP, args) => {
+                // K-line/G-line 등 서버 밴. 곧 연결이 닫히는데, 다시 붙어도 같으니 재연결하지 않는다
+                let reason = args
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "You are banned from this server".to_string());
+                warn!(event = "banned", reason = %reason);
+                emit_system_message(
+                    &self.ui_sink,
+                    self.server_id,
+                    &format!("서버에서 접속이 차단되었습니다: {reason}"),
+                );
+                ctx.banned = Some(reason);
             }
             Command::Response(Response::ERR_NICKNAMEINUSE, _) => {
                 // 닉네임이 중복된 경우
@@ -645,29 +755,129 @@ impl ServerActor {
     fn fail(&self, message: String) {
         error!(server_id = %self.server_id, message = %message, "Server actor failed");
 
-        // 실패 사유를 서버 버퍼에도 남긴다 (Failed 상태의 last_error와 동일 문구)
-        emit_system_message(
-            &self.ui_sink,
-            self.server_id,
-            &format!("연결 실패: {message}"),
-        );
-        self.server.transition_to_failed(message);
-        emit_server_status(&self.ui_sink, self.server_id, ServerStatus::Failed);
+        // 실패 사유를 서버 버퍼에도 남긴다 (Failed 상태의 last_error와 동일 문구).
+        // 사용자가 그새 취소했으면 Failed로 덮어쓰지도 알리지도 않는다
+        let notice = format!("연결 실패: {message}");
+        self.server
+            .transition_to_failed(task::id(), message, |status| {
+                emit_system_message(&self.ui_sink, self.server_id, &notice);
+                emit_server_status(&self.ui_sink, self.server_id, status);
+            });
     }
 }
 
 /// 세션 종료 사유.
-///
-/// 재연결 구현 시 `Closed` 분기에서 재시도 정책이 결정되는 진입점이 된다.
 #[derive(Debug)]
 enum SessionOutcome {
-    /// ServerCommand::Quit 로 정상 종료
+    /// ServerCommand::Quit 로 정상 종료, 또는 커맨드 채널이 닫힘 (runtime 정리)
     Quit,
-    /// 연결 단절 (스트림 에러 또는 스트림 종료)
-    Closed,
+    /// 연결 단절 (스트림 에러 또는 스트림 종료). 그 전에 465(밴)를 받았으면 `banned`에 사유
+    Closed { banned: Option<String> },
     /// 세션을 계속할 수 없는 실패 (예: 등록 단계 닉네임 거부). 사유는 Failed 상태에 기록된다.
     Failed(String),
 }
+
+/// 접속 시도 한 번의 결과 — 재시도 판단(`reconnect_policy`)의 입력
+#[derive(Debug)]
+enum AttemptResult {
+    /// 연결 수립(connect) 실패. `retryable`: 다시 해도 같은 설정 문제(TLS 오류)가 아니면 true
+    ConnectFailed { error: String, retryable: bool },
+    /// 연결 후 세션이 끝남. `registered`: 001(RPL_WELCOME)까지 받았는지
+    Session {
+        outcome: SessionOutcome,
+        registered: bool,
+    },
+}
+
+/// 접속 시도가 끝난 뒤 액터가 할 일
+#[derive(Debug, PartialEq)]
+enum Decision {
+    /// 사용자 종료 — Disconnected로 끝낸다
+    Stop,
+    /// 재시도하지 않는 실패 — 사유와 함께 Failed로 끝낸다
+    Fail(String),
+    /// 잠시 기다렸다 다시 접속한다
+    Retry,
+}
+
+/// 재연결 정책. `retry_connect_failure`가 false면(사용자가 직접 누른 첫 접속) 접속 실패는 바로 Failed.
+/// 세션 단절은 밴이 아니면 언제나 재시도한다 (서버 재시작·넷스플릿·flood 끊김도 backoff로 간격이 벌어진다).
+fn reconnect_policy(result: &AttemptResult, retry_connect_failure: bool) -> Decision {
+    match result {
+        AttemptResult::ConnectFailed { error, retryable } => {
+            if *retryable && retry_connect_failure {
+                Decision::Retry
+            } else {
+                Decision::Fail(error.clone())
+            }
+        }
+        AttemptResult::Session { outcome, .. } => match outcome {
+            SessionOutcome::Quit => Decision::Stop,
+            SessionOutcome::Failed(reason) => Decision::Fail(reason.clone()),
+            SessionOutcome::Closed {
+                banned: Some(reason),
+            } => Decision::Fail(format!("서버에서 접속이 차단되었습니다: {reason}")),
+            SessionOutcome::Closed { banned: None } => Decision::Retry,
+        },
+    }
+}
+
+/// 접속 실패 중 재시도할 만한 것 (TLS 오류는 인증서 등 설정 문제라 다시 해도 같다)
+fn is_retryable_connect_error(error: &anyhow::Error) -> bool {
+    !matches!(
+        error.downcast_ref::<error::Error>(),
+        Some(error::Error::Tls(_))
+    )
+}
+
+/// `retries`번째 재시도 전 대기 시간: `base`에서 두 배씩 늘려 `max`까지, ±20% jitter.
+/// `jitter`는 [-1, 1] 범위의 표본 (서버 재시작 때 여러 클라이언트가 한꺼번에 몰리지 않게).
+fn backoff(retries: u32, base: Duration, max: Duration, jitter: f64) -> Duration {
+    let exp = retries.saturating_sub(1).min(16);
+    let delay = base.saturating_mul(1 << exp).min(max);
+    delay.mul_f64(1.0 + 0.2 * jitter.clamp(-1.0, 1.0)).min(max)
+}
+
+/// [-1, 1] 범위의 jitter 표본. 의존성을 늘리지 않게 std의 무작위 해시 키를 쓴다
+fn jitter_sample() -> f64 {
+    use std::hash::{BuildHasher, Hasher};
+    let bits = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    (bits as f64 / u64::MAX as f64) * 2.0 - 1.0
+}
+
+/// 재연결 대기에 들어갈 때 서버 버퍼에 남길 안내
+fn retry_message(result: &AttemptResult, delay: Duration, retries: u32) -> String {
+    let secs = delay.as_secs_f64().round() as u64;
+    match result {
+        AttemptResult::ConnectFailed { error, .. } => {
+            format!("연결 실패: {error}. {secs}초 후 다시 시도합니다 ({retries}번째 시도).")
+        }
+        AttemptResult::Session { .. } => {
+            format!(
+                "서버와의 연결이 끊어졌습니다. {secs}초 후 다시 연결합니다 ({retries}번째 시도)."
+            )
+        }
+    }
+}
+
+/// 첫 재시도 대기. 넷스플릿/일시적 끊김은 대부분 바로 다시 붙는다
+#[cfg(not(test))]
+const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const RECONNECT_BASE_DELAY: Duration = Duration::from_millis(20);
+/// 재시도 대기 상한
+#[cfg(not(test))]
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const RECONNECT_MAX_DELAY: Duration = Duration::from_millis(200);
+/// 연결 수립(DNS + TCP + TLS) 제한 시간
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 서버로 PING을 보내기 전 무응답 시간 (초)
+const PING_TIME_SECS: u32 = 60;
+/// PING 후 PONG을 기다리는 시간 (초). 넘으면 세션을 끊고 재연결한다
+const PING_TIMEOUT_SECS: u32 = 30;
 
 /// 한 세션(연결) 동안만 유지되는 액터 지역 상태. 재접속하면 새로 만든다.
 #[derive(Default)]
@@ -682,6 +892,10 @@ struct SessionCtx {
     motd: Option<Vec<String>>,
     /// 005 PREFIX로 받은 채널 권한 모드/접두사 (예: `(ov)@+`). 받기 전엔 None
     prefix: Option<PrefixMap>,
+    /// 001(RPL_WELCOME)을 받아 등록이 끝났는지 — 끝났으면 재시도 횟수를 처음부터 센다
+    registered: bool,
+    /// 465(ERR_YOUREBANNEDCREEP)로 받은 밴 사유. 있으면 연결이 끊겨도 재연결하지 않는다
+    banned: Option<String>,
 }
 
 impl SessionCtx {
@@ -1093,6 +1307,103 @@ mod tests {
         assert_eq!(format_modes(&modes), "+nt");
         let modes = Mode::as_channel_modes(&["+o-v+b", "a", "b", "c!*@*"]).unwrap();
         assert_eq!(format_modes(&modes), "+o-v+b a b c!*@*");
+    }
+
+    fn closed(banned: Option<&str>, registered: bool) -> AttemptResult {
+        AttemptResult::Session {
+            outcome: SessionOutcome::Closed {
+                banned: banned.map(str::to_string),
+            },
+            registered,
+        }
+    }
+
+    #[test]
+    fn test_reconnect_policy() {
+        // 단절은 등록 여부와 상관없이 재시도 (첫 접속이든 아니든)
+        assert_eq!(
+            reconnect_policy(&closed(None, true), false),
+            Decision::Retry
+        );
+        assert_eq!(
+            reconnect_policy(&closed(None, false), false),
+            Decision::Retry
+        );
+
+        // 밴(465)은 재시도하지 않는다
+        let Decision::Fail(reason) = reconnect_policy(&closed(Some("K-lined"), true), true) else {
+            panic!("banned session should fail");
+        };
+        assert!(reason.contains("K-lined"), "{reason}");
+
+        // 사용자 종료 / 등록 실패
+        let quit = AttemptResult::Session {
+            outcome: SessionOutcome::Quit,
+            registered: true,
+        };
+        assert_eq!(reconnect_policy(&quit, true), Decision::Stop);
+        let failed = AttemptResult::Session {
+            outcome: SessionOutcome::Failed("nick".to_string()),
+            registered: false,
+        };
+        assert_eq!(
+            reconnect_policy(&failed, true),
+            Decision::Fail("nick".to_string())
+        );
+
+        // 접속 실패: 재시도 모드일 때만, TLS 오류는 언제나 실패
+        let refused = AttemptResult::ConnectFailed {
+            error: "refused".to_string(),
+            retryable: true,
+        };
+        assert_eq!(reconnect_policy(&refused, true), Decision::Retry);
+        assert_eq!(
+            reconnect_policy(&refused, false),
+            Decision::Fail("refused".to_string())
+        );
+        let tls = AttemptResult::ConnectFailed {
+            error: "tls".to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            reconnect_policy(&tls, true),
+            Decision::Fail("tls".to_string())
+        );
+    }
+
+    #[test]
+    fn test_retryable_connect_error() {
+        let io: anyhow::Error =
+            error::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)).into();
+        assert!(is_retryable_connect_error(&io));
+        assert!(is_retryable_connect_error(&anyhow::anyhow!("timeout")));
+    }
+
+    #[test]
+    fn test_backoff() {
+        let base = Duration::from_secs(2);
+        let max = Duration::from_secs(60);
+        let delays: Vec<u64> = (1..=8)
+            .map(|n| backoff(n, base, max, 0.0).as_secs())
+            .collect();
+        assert_eq!(delays, [2, 4, 8, 16, 32, 60, 60, 60]);
+
+        // 아주 큰 횟수에도 넘치지 않고 상한
+        assert_eq!(backoff(u32::MAX, base, max, 0.0), max);
+
+        // jitter는 ±20%, 상한은 넘지 않는다
+        assert_eq!(backoff(1, base, max, 1.0), Duration::from_millis(2400));
+        assert_eq!(backoff(1, base, max, -1.0), Duration::from_millis(1600));
+        assert_eq!(backoff(10, base, max, 1.0), max);
+        assert_eq!(backoff(10, base, max, -1.0), Duration::from_secs(48));
+    }
+
+    #[test]
+    fn test_jitter_sample_range() {
+        for _ in 0..1000 {
+            let j = jitter_sample();
+            assert!((-1.0..=1.0).contains(&j), "{j}");
+        }
     }
 }
 
@@ -2328,5 +2639,176 @@ mod quit_tests {
         let h = NickHarness::new(port);
         assert!(h.api.remove_server(uuid::Uuid::now_v7()).is_err());
         assert!(h.state.get_server(h.server_id).is_some());
+    }
+
+    // ==================== 자동 재연결 ====================
+
+    /// 연결을 여러 번 받는 mock IRC 서버. 받은 줄은 `"{연결 번호}:{줄}"`로 기록한다.
+    /// 첫 연결에서는 USER를 받으면 `first_reply`를 보내고 연결을 닫는다(단절 흉내).
+    /// 이후 연결은 001로 등록을 끝내고 유지한다.
+    async fn spawn_flaky_mock(
+        first_reply: &'static str,
+    ) -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = lines.clone();
+
+        tokio::spawn(async move {
+            let mut conn = 0;
+            while let Ok((socket, _)) = listener.accept().await {
+                let log = log.clone();
+                let this = conn;
+                conn += 1;
+                tokio::spawn(async move {
+                    let (read, mut write) = socket.into_split();
+                    let mut reader = BufReader::new(read).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        log.lock().unwrap().push(format!("{this}:{line}"));
+                        if line.starts_with("QUIT") {
+                            let _ = write.write_all(b"ERROR :Closing link\r\n").await;
+                            return;
+                        }
+                        if line.starts_with("USER") {
+                            if this == 0 {
+                                let _ = write.write_all(first_reply.as_bytes()).await;
+                                return;
+                            }
+                            let _ = write.write_all(b":mock 001 nick :Welcome\r\n").await;
+                        }
+                    }
+                });
+            }
+        });
+
+        (port, lines)
+    }
+
+    /// 연결을 받자마자 닫는 mock 서버 (등록이 끝나지 않는 단절). 받은 연결 수를 센다.
+    async fn spawn_drop_mock() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = accepted.clone();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(socket);
+            }
+        });
+        (port, accepted)
+    }
+
+    async fn wait_for_line(lines: &Arc<std::sync::Mutex<Vec<String>>>, expected: &str) {
+        timeout(Duration::from_secs(5), async {
+            while !lines.lock().unwrap().iter().any(|line| line == expected) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("never received {expected:?}: {:?}", lines.lock().unwrap()));
+    }
+
+    /// 001 이후 서버가 연결을 닫으면 Reconnecting을 거쳐 다시 접속·등록하고 저장 채널에 재입장한다.
+    #[tokio::test]
+    async fn closed_session_reconnects_and_rejoins() {
+        let (port, lines) = spawn_flaky_mock(":mock 001 nick :Welcome\r\n").await;
+        let mut h = NickHarness::new(port);
+        h.server().insert_channel("#saved", false);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Reconnecting).await;
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connected).await;
+
+        wait_for_line(&lines, "1:NICK nick").await;
+        wait_for_line(&lines, "1:JOIN #saved").await;
+        assert_eq!(h.server().status(), ServerStatus::Connected);
+    }
+
+    /// 465(밴)를 받고 끊기면 재접속하지 않고 사유와 함께 Failed.
+    #[tokio::test]
+    async fn banned_session_fails_without_reconnecting() {
+        let (port, lines) = spawn_flaky_mock(concat!(
+            ":mock 465 nick :You are banned from this server (K-lined)\r\n",
+            "ERROR :Closing Link: nick (K-lined)\r\n",
+        ))
+        .await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Failed).await;
+        let error = h.server().last_error().expect("failure reason missing");
+        assert!(error.contains("K-lined"), "{error}");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(h.server().status(), ServerStatus::Failed);
+        assert!(
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|line| line.starts_with("0:")),
+            "reconnected after ban: {:?}",
+            lines.lock().unwrap()
+        );
+    }
+
+    /// 재연결 중 끊기/취소하면 즉시 Disconnected가 되고 더 이상 접속을 시도하지 않는다.
+    async fn assert_stop_while_reconnecting(stop: impl Fn(&NickHarness)) {
+        let (port, accepted) = spawn_drop_mock().await;
+        let mut h = NickHarness::new(port);
+
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Reconnecting).await;
+
+        stop(&h);
+        assert_eq!(h.server().status(), ServerStatus::Disconnected);
+        // 멈추기 직전에 이미 보낸 연결 요청이 늦게 accept될 수 있으니 잠깐 기다린 뒤 센다
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let attempts = accepted.load(std::sync::atomic::Ordering::SeqCst);
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(h.server().status(), ServerStatus::Disconnected);
+        assert_eq!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            attempts,
+            "connection attempted after stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_stops_reconnecting() {
+        assert_stop_while_reconnecting(|h| h.api.manager().disconnect_server(h.server_id).unwrap())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn cancel_connect_stops_reconnecting() {
+        assert_stop_while_reconnecting(|h| h.api.manager().cancel_connect(h.server_id).unwrap())
+            .await;
+    }
+
+    /// 닫힌 포트: 사용자가 누른 접속은 바로 Failed, 앱 시작 자동 접속은 재시도(Reconnecting).
+    #[tokio::test]
+    async fn initial_connect_failure_retries_only_for_auto_connect() {
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+
+        let mut h = NickHarness::new(port);
+        h.connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Failed).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(h.server().status(), ServerStatus::Failed);
+
+        let mut h = NickHarness::new(port);
+        h.api.manager().process_auto_connect();
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Reconnecting).await;
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Connecting).await;
+        wait_for_status(&mut h.rx, h.server_id, ServerStatus::Reconnecting).await;
+        h.api.manager().cancel_connect(h.server_id).unwrap();
+        assert_eq!(h.server().status(), ServerStatus::Disconnected);
     }
 }

@@ -99,6 +99,7 @@ pub enum UiServerStatus {
     Registering,
     Disconnected,
     Disconnecting,
+    Reconnecting,
     Failed,
 }
 
@@ -137,6 +138,7 @@ fn map_status(status: &khannel_core::client::types::ServerStatus) -> UiServerSta
         S::Registering => UiServerStatus::Registering,
         S::Disconnected => UiServerStatus::Disconnected,
         S::Disconnecting => UiServerStatus::Disconnecting,
+        S::Reconnecting => UiServerStatus::Reconnecting,
         S::Failed => UiServerStatus::Failed,
     }
 }
@@ -417,7 +419,10 @@ impl IrcModel {
         }
         // 연결이 끊기면 유저 목록은 더 이상 맞지 않는다 — 재입장 후 NAMES로 다시 채워진다.
         // 응답을 못 받은 입장 요청도 버린다 (다음 접속의 자동 재입장이 화면을 바꾸지 않게)
-        if matches!(p.status, ServerStatus::Disconnected | ServerStatus::Failed) {
+        if matches!(
+            p.status,
+            ServerStatus::Disconnected | ServerStatus::Failed | ServerStatus::Reconnecting
+        ) {
             let prefix = format!("{}:", p.server_id);
             self.pending_focus.retain(|key| !key.starts_with(&prefix));
             for channel in self
@@ -1240,12 +1245,14 @@ impl IrcModel {
     }
 
     // 서버 컨텍스트 메뉴(Disconnect)에서 사용.
-    // 연결 시도 중(Connecting)이면 연결을 취소한다 — 코어 disconnect는 Connecting을 건드리지 않는다.
+    // 연결 시도 중(Connecting)이거나 재연결 대기 중(Reconnecting)이면 연결을 취소한다.
     pub fn disconnect_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
-        let connecting = self
-            .servers
-            .get(&server_id)
-            .is_some_and(|s| s.status == UiServerStatus::Connecting);
+        let connecting = self.servers.get(&server_id).is_some_and(|s| {
+            matches!(
+                s.status,
+                UiServerStatus::Connecting | UiServerStatus::Reconnecting
+            )
+        });
         let result = if connecting {
             self.api.cancel_connect(server_id)
         } else {
