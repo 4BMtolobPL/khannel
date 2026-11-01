@@ -660,7 +660,8 @@ impl ChatApp {
                         .font_weight(FontWeight::MEDIUM)
                         // zeron linux_caption_button: 닫기는 빨간 배경 + 흰 글자
                         .hover(|h| h.bg(gpui::rgb(0xe81123)).text_color(gpui::white()))
-                        // Linux는 마지막 창을 닫으면 앱이 종료된다(on_app_quit → graceful shutdown)
+                        // 트레이가 있으면 창만 닫히고 앱은 트레이에 남는다. 트레이가 없으면 마지막 창을 닫을 때
+                        // 앱이 종료된다(on_app_quit → graceful shutdown). main.rs `setup_tray` 참고.
                         .on_click(|_, window, cx| {
                             cx.stop_propagation();
                             window.remove_window()

@@ -33,6 +33,12 @@ unicode-segmentation = "1"
 # 사이드바 서버/채널 자연 정렬 (#2 < #10)
 alphanumeric-sort = "1.5.8"
 
+# Linux 시스템 트레이 (D-Bus StatusNotifierItem, 순수 Rust — GTK 불필요)
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["tokio"] }
+# 트레이 아이콘 fallback(내장 PNG → ARGB32 디코딩). gpui가 이미 쓰는 크레이트라 추가 빌드 비용이 거의 없다.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # macOS .app/.dmg 패키징 (cargo-packager). 경로는 이 파일 기준. 보통 `dist/macos/package.sh`로 실행한다
 # (dmg 이름 정리 + 공증까지). 서명은 cargo-packager가 아니라 dmg를 만들기 직전 훅(`sign-app.sh`)에서 한다 —
 # cargo-packager는 ad-hoc 서명(`-`)에도 `--timestamp`/hardened runtime을 붙이고 식별자를 환경변수로 바꿀 수 없다.
