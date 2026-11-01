@@ -8,6 +8,8 @@ mod assets;
 mod model;
 mod overlay;
 mod theme;
+#[cfg(target_os = "linux")]
+mod tray;
 mod ui;
 
 use std::path::PathBuf;
@@ -33,7 +35,7 @@ use crate::api::{UiApi, build_khannel, setup};
 use crate::model::IrcModel;
 use crate::ui::chat_app::ChatApp;
 
-/// 앱 수준 IRC 상태. 창과 생명주기를 분리해, macOS에서 창을 닫아도(앱은 계속 실행)
+/// 앱 수준 IRC 상태. 창과 생명주기를 분리해, 창을 닫아도(macOS: Dock, Linux: 트레이에 남아 앱은 계속 실행)
 /// 이벤트를 계속 받아 쌓고, 창을 다시 열면 그대로 이어서 보여준다.
 struct MainModel(Entity<IrcModel>);
 
@@ -80,14 +82,16 @@ fn main() {
     state.set_persistence_path(&config_path);
 
     let khannel_api = build_khannel(ui_sink.clone(), state);
+    #[cfg(target_os = "linux")]
+    let tray_rt = rt.clone();
     let api = Arc::new(UiApi::new(rt, khannel_api, ui_sink));
 
     // 2. GPUI 앱 실행
     let app = application().with_assets(assets::Assets);
 
     // macOS: 창이 모두 닫힌 뒤 Dock 아이콘을 클릭하면 창을 다시 연다.
-    // (macOS 기본 종료 정책은 마지막 창을 닫아도 앱을 종료하지 않는다. Linux는 마지막 창을
-    //  닫으면 종료하므로 이 경로를 타지 않는다.)
+    // (macOS 기본 종료 정책은 마지막 창을 닫아도 앱을 종료하지 않는다. Linux는 Dock 대신
+    //  트레이가 같은 역할을 한다 — `setup_tray` 참고.)
     app.on_reopen(|cx| {
         if cx.windows().is_empty()
             && let Some(model) = cx.try_global::<MainModel>().map(|m| m.0.clone())
@@ -119,7 +123,7 @@ fn main() {
             cx.quit();
         });
 
-        // 2) 그 밖의 종료 경로(Linux 마지막 창 닫기, macOS Dock > 종료 등)는 on_app_quit에서
+        // 2) 그 밖의 종료 경로(트레이가 없는 Linux에서 마지막 창 닫기, macOS Dock > 종료 등)는 on_app_quit에서
         //    동일한 graceful shutdown을 거친다 (이미 시작했으면 재진입 스킵).
         let quit_api = api.clone();
         cx.on_app_quit(move |_cx| {
@@ -141,6 +145,8 @@ fn main() {
 
         let model = cx.new(|cx| IrcModel::start(api.clone(), rx, cx));
         cx.set_global(MainModel(model.clone()));
+        #[cfg(target_os = "linux")]
+        setup_tray(&tray_rt, cx);
         open_main_window(model, cx);
         // 실행 직후 앱을 포그라운드로 가져온다 (macOS: 터미널/Finder에서 실행해도 창이 뒤에 깔리지 않게)
         cx.activate(true);
@@ -171,7 +177,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-cmd-space", crate::action::ShowCharacterPalette, None),
     ]);
     // Linux 등: 종료 단축키는 두지 않는다 — 창 닫기는 컴포지터/WM 단축키나 닫기 버튼으로
-    // (사용자 결정). 종료 흐름은 on_app_quit에서 동일하게 graceful shutdown을 거친다.
+    // (사용자 결정). 트레이가 있으면 창만 닫히고 앱은 트레이에 남으며, 종료는 트레이 메뉴 "종료"로
+    // 한다. 트레이가 없으면 마지막 창을 닫을 때 on_app_quit에서 graceful shutdown을 거친다.
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
         // TextInput 표준 편집 액션 (gpui examples/input.rs 참고)
@@ -203,7 +210,52 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", Dismiss, None)]);
 }
 
-/// 메인 창을 연다 (최초 실행 + macOS Dock 클릭 재오픈 공통).
+/// Linux: 시스템 트레이를 띄우고, 트레이 명령을 gpui 메인 스레드에서 처리한다.
+///
+/// 트레이가 실제로 등록됐을 때만 `QuitMode::Explicit`(창을 모두 닫아도 앱 유지)로 둔다.
+/// SNI 호스트가 없는 환경(예: AppIndicator 확장이 없는 GNOME)에서는 창을 닫으면 앱이 보이지 않는
+/// 채로 남게 되므로 `LastWindowClosed`(마지막 창을 닫으면 종료)를 유지한다.
+/// `Explicit`이면 닫기 버튼(`remove_window`)·컴포지터 닫기(Alt+F4 등) 모두 같은 경로를 타므로
+/// 창 닫기 이벤트를 따로 가로챌 필요가 없다.
+#[cfg(target_os = "linux")]
+fn setup_tray(rt: &tokio::runtime::Runtime, cx: &mut App) {
+    use futures::StreamExt;
+    use gpui::QuitMode;
+    use tray::TrayCommand;
+
+    cx.set_quit_mode(QuitMode::LastWindowClosed);
+
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    tray::spawn(rt, tx);
+
+    cx.spawn(async move |cx| {
+        while let Some(cmd) = rx.next().await {
+            cx.update(|cx| match cmd {
+                TrayCommand::Show => {
+                    // (`cx.activate`는 Linux에서 미구현이라 부르지 않는다)
+                    if let Some(window) = cx.windows().into_iter().next() {
+                        let _ = window.update(cx, |_, window, _| window.activate_window());
+                    } else if let Some(model) = cx.try_global::<MainModel>().map(|m| m.0.clone()) {
+                        open_main_window(model, cx);
+                    }
+                }
+                // 단축키/macOS 메뉴와 같은 Quit 액션 경로 → shutdown → quit
+                TrayCommand::Quit => cx.dispatch_action(&Quit),
+                TrayCommand::Available(available) => {
+                    tracing::info!("tray available: {available}");
+                    cx.set_quit_mode(if available {
+                        QuitMode::Explicit
+                    } else {
+                        QuitMode::LastWindowClosed
+                    });
+                }
+            });
+        }
+    })
+    .detach();
+}
+
+/// 메인 창을 연다 (최초 실행 + macOS Dock 클릭 / Linux 트레이 재오픈 공통).
 fn open_main_window(model: Entity<IrcModel>, cx: &mut App) {
     let bounds = Bounds::centered(None, Size::new(px(760.), px(520.)), cx);
     cx.open_window(
