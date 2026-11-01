@@ -7149,8 +7149,8 @@ Used by:
 
 - [xim-ctext 0.3.0](https://github.com/Riey/xim-rs)
 - [xim-parser 0.2.1](https://github.com/Riey/xim-rs)
-- [khannel 1.0.0](https://github.com/4BMtolobPL/khannel)
-- [khannel-core 1.0.0](https://github.com/4BMtolobPL/khannel)
+- [khannel 1.0.1](https://github.com/4BMtolobPL/khannel)
+- [khannel-core 1.0.1](https://github.com/4BMtolobPL/khannel)
 - [accesskit 0.24.1](https://github.com/AccessKit/accesskit)
 - [accesskit_atspi_common 0.19.1](https://github.com/AccessKit/accesskit)
 - [accesskit_consumer 0.38.0](https://github.com/AccessKit/accesskit)
@@ -9847,4 +9847,3 @@ the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 ```
-

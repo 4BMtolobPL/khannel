@@ -24,6 +24,7 @@
     <category>IRCClient</category>
   </categories>
   <releases>
+    <release version="1.0.1" date="2026-11-02"/>
     <release version="1.0.0" date="2026-10-29"/>
   </releases>
 </component>

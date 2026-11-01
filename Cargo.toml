@@ -4,7 +4,7 @@ members = ["crates/khannel-core", "crates/khannel"]
 
 # 공통 패키지 메타데이터 (member crates에서 `<필드>.workspace = true`로 상속)
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "MIT"
 authors = ["Talmo Kim"]
