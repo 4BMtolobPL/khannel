@@ -2,7 +2,7 @@
 # Fedora 크레이트 패키지로는 만들 수 없다. SRPM은 dist/rpm/make-srpm.sh로 만든다.
 
 Name:           khannel
-Version:        1.0.0
+Version:        1.0.1
 Release:        1%{?dist}
 Summary:        IRC client built with GPUI
 
@@ -77,5 +77,8 @@ cargo test --release --frozen --workspace
 %{_datadir}/icons/hicolor/*/apps/com.kimtalmo.khannel.png
 
 %changelog
+* Mon Nov 02 2026 Talmo Kim <k4qe6urml3@gmail.com> - 1.0.1-1
+- Update to 1.0.1
+
 * Thu Oct 29 2026 Talmo Kim <k4qe6urml3@gmail.com> - 1.0.0-1
 - Initial package
