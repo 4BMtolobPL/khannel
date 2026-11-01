@@ -40,10 +40,9 @@ pub enum MenuItemStyle {
     Danger,
 }
 
-/// 메뉴 항목. Svelte: `w-full text-left px-3 py-1.5 text-sm hover:... flex items-center gap-2`
+/// 메뉴 항목. Svelte: `w-full text-left px-3 py-1.5 text-sm hover:... flex items-center`
 pub fn context_menu_item(
     id: &'static str,
-    icon: &'static str,
     label: &'static str,
     style: MenuItemStyle,
     theme: Theme,
@@ -53,7 +52,6 @@ pub fn context_menu_item(
         .w_full()
         .flex()
         .items_center()
-        .gap_x(px(8.))
         .px(px(12.))
         .py(px(6.))
         .text_sm()
@@ -63,24 +61,18 @@ pub fn context_menu_item(
             MenuItemStyle::Accent => h.bg(theme.accent_hover_bg).text_color(theme.accent_text),
             MenuItemStyle::Danger => h.bg(theme.danger_hover_bg).text_color(theme.danger_text),
         })
-        .child(
-            // Svelte: w-4 text-center opacity-70
-            div()
-                .w(px(16.))
-                .text_align(gpui::TextAlign::Center)
-                .opacity(0.7)
-                .child(icon),
-        )
         .child(label)
 }
 
-/// 구분선 (Svelte: `my-1 border-t border-neutral-100`)
+/// 구분선 (Svelte: `my-1 border-t border-neutral-100`). 반투명 메뉴 배경 위에서 `border_subtle`은
+/// 거의 보이지 않아 메뉴 테두리와 같은 `border`를 쓴다. 좌우는 항목 글자 시작 위치(`px(12.)`)에
+/// 맞춰 띄운다.
+///
+/// `border_t_1()`이 아니라 높이 1px 배경으로 그린다. 내용 없는 div에 위 테두리만 주면 상자 높이가
+/// 1px이 되는데, gpui quad 셰이더는 픽셀 중심이 상자 중심보다 위(`center_to_point.y < 0`)일 때만
+/// 위 테두리를 쓰므로, 중심과 정확히 겹치는 유일한 픽셀 줄에 아래 테두리(0)가 골라져 선이 그려지지 않는다.
 pub fn context_menu_separator(theme: Theme) -> Div {
-    div()
-        .mt(px(4.))
-        .mb(px(4.))
-        .border_t_1()
-        .border_color(theme.border_subtle)
+    div().my(px(4.)).mx(px(12.)).h(px(1.)).bg(theme.border)
 }
 
 /// 컨텍스트 메뉴를 윈도우 좌표(position)에 띄우는 deferred 엘리먼트.

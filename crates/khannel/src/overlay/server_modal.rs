@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::action::Dismiss;
+use crate::assets::ICON_CHECK;
 use crate::model::IrcModel;
 use crate::overlay::modal::{
     DismissEvent, error_text, field_label, modal_header, modal_overlay, modal_panel,
@@ -240,10 +241,10 @@ impl Render for ServerModal {
                                                     .when(self.tls, |d| {
                                                         d.bg(theme.accent)
                                                             .child(
-                                                                div()
-                                                                    .text_color(theme.text_inverse)
-                                                                    .text_size(px(11.))
-                                                                    .child("✓"),
+                                                                gpui::svg()
+                                                                    .path(ICON_CHECK)
+                                                                    .size(px(11.))
+                                                                    .text_color(theme.text_inverse),
                                                             )
                                                             .flex()
                                                             .items_center()

@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::action::Dismiss;
+use crate::assets::ICON_X;
 use crate::theme::Theme;
 
 /// 모달 닫힘 이벤트. 각 모달은 `EventEmitter<DismissEvent>`를 구현하고,
@@ -62,7 +63,7 @@ pub fn modal_panel(
         .shadow_lg()
 }
 
-/// 모달 헤더: 제목 + ✕ 닫기 버튼 (Svelte ServerModal 헤더와 동일 배치)
+/// 모달 헤더: 제목 + X 닫기 버튼 (Svelte ServerModal 헤더와 동일 배치)
 pub fn modal_header(
     title: impl Into<SharedString>,
     theme: Theme,
@@ -82,11 +83,16 @@ pub fn modal_header(
         .child(
             div()
                 .id("modal-close")
+                .group("modal-close")
                 .cursor_pointer()
-                .text_color(theme.text_subtle)
-                .hover(|h| h.text_color(theme.text_main))
                 .on_click(on_close)
-                .child("✕"),
+                .child(
+                    gpui::svg()
+                        .path(ICON_X)
+                        .size(px(14.))
+                        .text_color(theme.text_subtle)
+                        .group_hover("modal-close", |s| s.text_color(theme.text_main)),
+                ),
         )
 }
 
